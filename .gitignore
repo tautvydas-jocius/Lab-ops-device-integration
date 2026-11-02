@@ -1,0 +1,7 @@
+.env
+secrets.h
+firmware/include/secrets.h
+.pio/
+__pycache__/
+*.py[cod]
+.DS_Store
