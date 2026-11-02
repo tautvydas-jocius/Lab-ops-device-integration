@@ -181,7 +181,7 @@
     {
       "from": "mqtt",
       "to": "esp",
-      "label": "config / status ack",
+      "label": "retained config",
       "variant": "dashed",
       "fromSide": "bottom",
       "toSide": "bottom",
