@@ -8,6 +8,11 @@ Balance RS232 -> ESP32-S3 -> MQTT -> Django listener -> parser schema from DB ->
                           Django admin -> retained MQTT config -> ESP32-S3
 ```
 
+## System diagrams
+
+- [Device integrations](docs/device-integrations.html) — data and configuration paths across the balance, firmware, MQTT, Django, PostgreSQL, and MES API. Editable source: [architecture JSON](docs/device-integrations.architecture.json).
+- [Where readings stall](docs/device-stall-points.html) — current failure and exception paths in the gateway. This is a code-path map; the system does not currently record stall duration or frequency. Editable source: [lifecycle JSON](docs/device-stall-points.lifecycle.json).
+
 ## MQTT topics
 
 Default prefix: `lab/devices` (override with `MQTT_PREFIX`).

@@ -1,0 +1,217 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Balance Device Integrations",
+    "subtitle": "Serial readings flow to MES; versioned settings flow back to devices",
+    "output": "device-integrations.html"
+  },
+  "components": [
+    {
+      "id": "balance",
+      "type": "external",
+      "label": "Balance",
+      "sublabel": "RS232 output",
+      "pos": [
+        35,
+        205
+      ],
+      "size": [
+        125,
+        64
+      ]
+    },
+    {
+      "id": "esp",
+      "type": "backend",
+      "label": "ESP32-S3",
+      "sublabel": "serial bridge",
+      "pos": [
+        235,
+        205
+      ],
+      "size": [
+        135,
+        64
+      ]
+    },
+    {
+      "id": "mqtt",
+      "type": "messagebus",
+      "label": "Mosquitto",
+      "sublabel": "MQTT broker",
+      "pos": [
+        445,
+        205
+      ],
+      "size": [
+        135,
+        64
+      ]
+    },
+    {
+      "id": "listener",
+      "type": "backend",
+      "label": "Django listener",
+      "sublabel": "parse + persist",
+      "pos": [
+        655,
+        205
+      ],
+      "size": [
+        145,
+        64
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "schemas + readings",
+      "pos": [
+        865,
+        205
+      ],
+      "size": [
+        145,
+        64
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "JSON API",
+      "sublabel": "devices + readings",
+      "pos": [
+        1075,
+        205
+      ],
+      "size": [
+        130,
+        64
+      ]
+    },
+    {
+      "id": "mes",
+      "type": "external",
+      "label": "MES",
+      "sublabel": "protocol weighing steps",
+      "pos": [
+        1275,
+        205
+      ],
+      "size": [
+        145,
+        64
+      ]
+    },
+    {
+      "id": "admin",
+      "type": "frontend",
+      "label": "Django admin",
+      "sublabel": "device configuration",
+      "pos": [
+        655,
+        400
+      ],
+      "size": [
+        145,
+        64
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "balance",
+      "to": "esp",
+      "label": "serial lines",
+      "variant": "emphasis",
+      "labelDy": -34
+    },
+    {
+      "from": "esp",
+      "to": "mqtt",
+      "label": "raw + status",
+      "variant": "emphasis",
+      "labelDy": -34
+    },
+    {
+      "from": "mqtt",
+      "to": "listener",
+      "label": "raw / status topics",
+      "variant": "emphasis",
+      "labelDy": -34
+    },
+    {
+      "from": "listener",
+      "to": "db",
+      "label": "parsed reading + schema",
+      "labelDy": -34
+    },
+    {
+      "from": "db",
+      "to": "api",
+      "label": "query",
+      "labelDy": -34
+    },
+    {
+      "from": "api",
+      "to": "mes",
+      "label": "HTTP JSON",
+      "variant": "emphasis",
+      "labelDy": -34
+    },
+    {
+      "from": "admin",
+      "to": "db",
+      "label": "edit device + schema",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDy": -15
+    },
+    {
+      "from": "admin",
+      "to": "mqtt",
+      "label": "retained config",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDy": 58
+    },
+    {
+      "from": "mqtt",
+      "to": "esp",
+      "label": "config / status ack",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "labelDy": 58
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Device side",
+      "items": [
+        "Firmware forwards raw RS232 lines",
+        "Retained config survives device reconnects"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Traceability",
+      "items": [
+        "Each reading records the parser schema version",
+        "Used schemas are immutable"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "MES contract",
+      "items": [
+        "Read device inventory and current config",
+        "Fetch recent readings; filter stable values"
+      ]
+    }
+  ]
+}

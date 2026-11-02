@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "Where Device Readings Stall",
+    "subtitle": "Current integration failure and exception paths; no duration metrics are recorded",
+    "output": "device-stall-points.html"
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Reading path"
+    },
+    {
+      "id": "waiting",
+      "label": "Stall and exception points"
+    },
+    {
+      "id": "terminal",
+      "label": "Terminal outcomes"
+    }
+  ],
+  "states": [
+    {
+      "id": "device",
+      "type": "start",
+      "label": "Device publish",
+      "sublabel": "balance \u2192 ESP32 \u2192 MQTT",
+      "lane": "main",
+      "col": 2,
+      "step": "01"
+    },
+    {
+      "id": "gateway",
+      "type": "active",
+      "label": "Gateway ingest",
+      "sublabel": "Django decode + parse",
+      "lane": "main",
+      "col": 3,
+      "step": "02"
+    },
+    {
+      "id": "consumer",
+      "type": "success",
+      "label": "Stored \u2192 MES",
+      "sublabel": "Postgres readings API",
+      "lane": "main",
+      "col": 4,
+      "step": "03"
+    },
+    {
+      "id": "broker_wait",
+      "type": "waiting",
+      "label": "Broker down",
+      "sublabel": "listener retries",
+      "lane": "waiting",
+      "col": 0,
+      "tag": "3 s retry"
+    },
+    {
+      "id": "bad_json",
+      "type": "failure",
+      "label": "Bad JSON",
+      "sublabel": "logged and dropped",
+      "lane": "waiting",
+      "col": 1,
+      "tag": "discarded"
+    },
+    {
+      "id": "parse_error",
+      "type": "waiting",
+      "label": "Invalid line",
+      "sublabel": "stored as not OK",
+      "lane": "waiting",
+      "col": 2,
+      "tag": "inspect"
+    },
+    {
+      "id": "no_parser",
+      "type": "failure",
+      "label": "No parser",
+      "sublabel": "unknown device ignored",
+      "lane": "terminal",
+      "col": 1
+    },
+    {
+      "id": "no_input",
+      "type": "neutral",
+      "label": "No serial input",
+      "sublabel": "reading stream stops",
+      "lane": "terminal",
+      "col": 0
+    }
+  ],
+  "transitions": [
+    {
+      "from": "device",
+      "to": "gateway",
+      "variant": "emphasis"
+    },
+    {
+      "from": "gateway",
+      "to": "consumer",
+      "variant": "emphasis"
+    },
+    {
+      "from": "device",
+      "to": "broker_wait",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "from": "gateway",
+      "to": "bad_json",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "from": "consumer",
+      "to": "parse_error",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "straight"
+    },
+    {
+      "from": "gateway",
+      "to": "no_parser",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "drop"
+    },
+    {
+      "from": "device",
+      "to": "no_input",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "route": "drop"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "What is measured",
+      "items": [
+        "No duration, queue-depth, or stall-count metrics are recorded",
+        "The diagram marks code paths, not incident frequency"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Current handling",
+      "items": [
+        "Malformed JSON is logged and discarded",
+        "Parser errors are saved with the raw line",
+        "Unknown devices need an available parser schema"
+      ]
+    }
+  ]
+}
