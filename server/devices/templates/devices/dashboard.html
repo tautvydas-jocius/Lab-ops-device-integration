@@ -1,0 +1,310 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lab-Ops Device Gateway | Pharma QC Balance Telemetry</title>
+  <link rel="stylesheet" href="{% static 'devices/dashboard.css' %}">
+  <!-- Fallback style link if needed -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand-section">
+        <div class="brand-icon-box" title="Lab-Ops QC Device Gateway">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3"></path></svg>
+        </div>
+        <div class="brand-titles">
+          <h1>
+            Lab-Ops Device Gateway
+            <span class="badge-tag">Pharma QC</span>
+          </h1>
+          <p>Real-time RS232 Balance Integration &amp; Traceability Layer</p>
+        </div>
+      </div>
+
+      <div class="header-status-pill">
+        <span class="pulse-dot"></span>
+        <span id="header-mqtt-info">{{ overview.stats.mqtt_host }}:{{ overview.stats.mqtt_port }} • {{ overview.stats.mqtt_prefix }}/+</span>
+      </div>
+
+      <div class="header-actions">
+        <div style="display: flex; align-items: center; gap: 0.4rem; background: rgba(30, 41, 59, 0.6); padding: 0.25rem 0.6rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">Poll:</span>
+          <select id="poll-interval-select" style="background: transparent; color: var(--text-primary); border: none; font-size: 0.8rem; font-family: var(--font-mono); outline: none; cursor: pointer;">
+            <option value="1000" style="background: #0f172a;">1.0s</option>
+            <option value="1500" selected style="background: #0f172a;">1.5s (Default)</option>
+            <option value="3000" style="background: #0f172a;">3.0s</option>
+            <option value="5000" style="background: #0f172a;">5.0s</option>
+            <option value="0" style="background: #0f172a;">Paused</option>
+          </select>
+        </div>
+
+        <button id="btn-refresh-manual" class="control-btn" title="Refresh Now">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          Refresh
+        </button>
+
+        <a href="/api/devices/" target="_blank" class="control-btn" title="Inspect JSON REST API">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+          API
+        </a>
+
+        <a href="/admin/" target="_blank" class="control-btn primary" title="Open Django Admin Portal">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.121 17.804A13.937 13.937 0 0112 16c2.5 0 4.847.655 6.879 1.804M15 10a3 3 0 11-6 0 3 3 0 016 0zm6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          Admin UI
+        </a>
+      </div>
+    </header>
+
+    <!-- KPI Overview Cards -->
+    <section class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap devices">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
+        </div>
+        <div class="kpi-meta">
+          <span class="kpi-title">Online Balances</span>
+          <span class="kpi-value" id="kpi-online-devices">{{ overview.stats.online_devices }} / {{ overview.stats.total_devices }}</span>
+          <span class="kpi-sub">Total provisioned: <strong id="kpi-total-devices">{{ overview.stats.total_devices }}</strong></span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap readings">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+        </div>
+        <div class="kpi-meta">
+          <span class="kpi-title">Traceable Readings</span>
+          <span class="kpi-value" id="kpi-total-readings">{{ overview.stats.total_readings }}</span>
+          <span class="kpi-sub">Persisted in PostgreSQL</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap stable">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+        </div>
+        <div class="kpi-meta">
+          <span class="kpi-title">Stability Compliance</span>
+          <span class="kpi-value" id="kpi-stable-pct">{{ overview.stats.stable_percentage }}%</span>
+          <span class="kpi-sub">GMP stable measurements</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon-wrap schemas">
+          <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+        </div>
+        <div class="kpi-meta">
+          <span class="kpi-title">Parser Schemas</span>
+          <span class="kpi-value" id="kpi-schemas-count">{{ overview.stats.schemas_count }}</span>
+          <span class="kpi-sub">Immutable versioned regex</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Active Balances Section -->
+    <div class="section-header">
+      <h2 class="section-title">
+        <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+        Active Laboratory Balances
+      </h2>
+      <div class="refresh-indicator">
+        <span class="pulse-dot" style="width: 6px; height: 6px;"></span>
+        <span id="refresh-mode-text">Live (1.5s)</span> • Last sync: <span id="last-updated-time">just now</span>
+      </div>
+    </div>
+
+    <div class="devices-grid" id="devices-grid">
+      {% for d in overview.devices %}
+      <div class="device-card" id="device-card-{{ d.device_id }}">
+        <div class="card-top">
+          <div>
+            <span class="device-id-badge">{{ d.device_id }}</span>
+            <h3 class="device-name">{{ d.name }}</h3>
+            <div class="device-hardware-info">
+              <span>{{ d.manufacturer }} {{ d.model }}</span>
+              {% if d.location %}<span>• {{ d.location }}</span>{% endif %}
+            </div>
+          </div>
+          <span class="status-badge {% if d.online %}online{% else %}offline{% endif %}">
+            <span class="dot"></span>
+            {% if d.online %}Online{% else %}Offline{% endif %}
+          </span>
+        </div>
+
+        <div class="display-box">
+          <div class="display-main-row">
+            <div class="display-weight-wrap">
+              <span class="display-weight {% if d.latest_reading.stable %}stable{% elif d.latest_reading.stable == False %}dynamic{% endif %}">
+                {% if d.latest_reading and d.latest_reading.value != None %}{{ d.latest_reading.value }}{% else %}--.----{% endif %}
+              </span>
+              <span class="display-unit">{% if d.latest_reading and d.latest_reading.unit %}{{ d.latest_reading.unit }}{% else %}g{% endif %}</span>
+            </div>
+            <span class="stability-pill {% if d.latest_reading.stable %}stable{% elif d.latest_reading.stable == False %}dynamic{% else %}none{% endif %}">
+              {% if d.latest_reading.stable %}● STABLE{% elif d.latest_reading.stable == False %}▲ DYNAMIC{% else %}NO DATA{% endif %}
+            </span>
+          </div>
+          <div class="sparkline-container">
+            <div class="sparkline-bar stable" style="height: 60%;"></div>
+            <div class="sparkline-bar stable" style="height: 70%;"></div>
+            <div class="sparkline-bar dynamic" style="height: 55%;"></div>
+            <div class="sparkline-bar stable" style="height: 80%;"></div>
+          </div>
+        </div>
+
+        <div class="specs-list">
+          <div class="spec-item">
+            <span class="spec-label">Parser Schema</span>
+            <span class="spec-val schema-badge">{{ d.parser.name }} v{{ d.parser.version }}</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Config Version</span>
+            <span class="spec-val">v{{ d.config_version }} (applied: v{{ d.applied_config_version|default:"?" }})</span>
+          </div>
+          <div class="spec-item">
+            <span class="spec-label">Serial Link</span>
+            <span class="spec-val">{{ d.baud }} baud • {{ d.poll_interval_ms }}ms poll</span>
+          </div>
+        </div>
+
+        <div class="raw-line-snippet" title="Latest RS232 Raw Line">
+          <span style="overflow: hidden; text-overflow: ellipsis;">{{ d.latest_reading.raw_line|default:"(waiting for data)" }}</span>
+          <button class="copy-btn" title="Copy raw line" onclick="copyText('{{ d.latest_reading.raw_line|default:""|escapejs }}')">
+            <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+          </button>
+        </div>
+
+        <div class="card-actions">
+          <button class="btn-card" onclick="filterByDevice('{{ d.device_id }}')">
+            <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+            Filter Stream
+          </button>
+          <button class="btn-card" onclick="showDeviceModal('{{ d.device_id }}')">
+            <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+            Hardware Config
+          </button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Live Traceability Audit Trail -->
+    <section class="stream-section" id="audit-stream-section">
+      <div class="stream-controls">
+        <div>
+          <h2 class="section-title" style="margin-bottom: 0.35rem;">
+            <svg viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            Traceable Telemetry Audit Trail
+          </h2>
+          <span style="font-size: 0.78rem; color: var(--text-muted);" id="stream-count-badge">
+            {{ overview.recent_readings|length }} records
+          </span>
+        </div>
+
+        <div class="device-filter-pills">
+          <button class="filter-pill-btn active" data-device="all" onclick="filterByDevice('all')">All Balances</button>
+          {% for d in overview.devices %}
+          <button class="filter-pill-btn" data-device="{{ d.device_id }}" onclick="filterByDevice('{{ d.device_id }}')">{{ d.device_id }}</button>
+          {% endfor %}
+        </div>
+
+        <div class="stream-search-wrap">
+          <label class="checkbox-label">
+            <input type="checkbox" id="filter-stable-only">
+            Stable Only
+          </label>
+          <input type="text" id="stream-search-input" class="search-input" placeholder="Search line, value, seq...">
+        </div>
+      </div>
+
+      <div class="table-responsive">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Device</th>
+              <th>Weight Value</th>
+              <th>Stability</th>
+              <th>Traceable Parser</th>
+              <th>Seq</th>
+              <th>Raw RS232 Line</th>
+              <th>Validation</th>
+            </tr>
+          </thead>
+          <tbody id="audit-table-body">
+            {% for r in overview.recent_readings %}
+            <tr>
+              <td class="table-time">{{ r.received_at }}</td>
+              <td>
+                <strong style="color: var(--text-bright);">{{ r.device_id }}</strong>
+                <span style="color: var(--text-muted); font-size: 0.75rem;"> {{ r.device_name }}</span>
+              </td>
+              <td class="table-val {% if r.stable %}stable{% elif r.stable == False %}dynamic{% endif %}">
+                {{ r.value|default:"--" }} <small style="font-weight: normal; color: var(--text-muted);">{{ r.unit }}</small>
+              </td>
+              <td>
+                {% if not r.ok %}
+                <span class="stability-pill error" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">ERROR</span>
+                {% elif r.stable %}
+                <span class="stability-pill stable" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">● STABLE</span>
+                {% elif r.stable == False %}
+                <span class="stability-pill dynamic" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">▲ DYNAMIC</span>
+                {% else %}
+                <span class="stability-pill none" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">--</span>
+                {% endif %}
+              </td>
+              <td><span class="schema-badge">{{ r.parser|default:"None" }}</span></td>
+              <td style="font-family: var(--font-mono); color: var(--text-muted);">#{{ r.seq|default:"--" }}</td>
+              <td><span class="table-raw" title="{{ r.raw_line }}">{{ r.raw_line }}</span></td>
+              <td>
+                {% if r.ok %}
+                <span style="color: var(--color-stable); font-size: 0.75rem; font-weight:600;">✓ VALID</span>
+                {% else %}
+                <span style="color: var(--color-error); font-size: 0.75rem; font-weight:600;" title="{{ r.error }}">✕ INVALID</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="8" style="text-align:center; padding: 2.5rem; color: var(--text-muted);">No readings logged yet.</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Hardware Details Modal -->
+  <div class="modal-overlay" id="device-modal" onclick="if(event.target === this) closeModal()">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title" id="modal-device-title">Device Specifications</h3>
+        <button class="modal-close" onclick="closeModal()" title="Close">
+          <svg style="width:20px;height:20px;" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </div>
+      <div id="modal-device-content"></div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast-msg" id="toast">Copied to clipboard</div>
+
+  <script src="{% static 'devices/dashboard.js' %}"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const initialData = {{ overview_json|safe }};
+      if (window.LabOpsDashboard) {
+        window.LabOpsDashboard.init(initialData);
+      }
+    });
+  </script>
+</body>
+</html>

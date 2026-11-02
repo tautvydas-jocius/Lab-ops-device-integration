@@ -5,3 +5,4 @@ firmware/include/secrets.h
 __pycache__/
 *.py[cod]
 .DS_Store
+staticfiles/

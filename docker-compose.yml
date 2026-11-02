@@ -26,7 +26,7 @@ services:
       retries: 20
   web:
     build: ./server
-    command: sh -c "python manage.py migrate && python manage.py seed_scales && python manage.py runserver 0.0.0.0:8000"
+    command: sh -c "python manage.py collectstatic --noinput && python manage.py migrate && python manage.py seed_scales && python manage.py runserver --insecure 0.0.0.0:8000"
     environment: &django-env
       POSTGRES_DB: labops
       POSTGRES_USER: labops
@@ -54,7 +54,7 @@ services:
     working_dir: /app
     command: python /simulator/scale_sim.py --host mosquitto --port 1883
     volumes:
-      - ./simulator:/simulator:ro
+      - ./simulator:/simulator:ro,z
     environment:
       PYTHONUNBUFFERED: "1"
     depends_on:

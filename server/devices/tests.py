@@ -35,3 +35,18 @@ class DeviceIntegrationTests(TestCase):
         self.mt.pattern = r"different"
         with self.assertRaisesMessage(ValidationError, "create a new version"):
             self.mt.save()
+    @patch("devices.mqtt.publish_config")
+    def test_dashboard_and_overview_view(self, publish):
+        d = Device.objects.create(device_id="bal-test", name="Test", parser=self.mt)
+        Reading.objects.create(device=d, parser=self.mt, raw_line="S S 12.3456 g", ok=True, value=12.3456, unit="g", stable=True)
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Lab-Ops Device Gateway")
+        self.assertContains(response, "bal-test")
+
+        overview_resp = self.client.get("/api/overview/")
+        self.assertEqual(overview_resp.status_code, 200)
+        data = overview_resp.json()
+        self.assertEqual(data["stats"]["total_devices"], 1)
+        self.assertEqual(data["devices"][0]["device_id"], "bal-test")
+        self.assertEqual(data["devices"][0]["latest_reading"]["value"], "12.345600")
