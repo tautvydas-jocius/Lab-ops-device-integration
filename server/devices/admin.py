@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Device, DeviceCommand, ParserSchema, Reading
+from .models import Device, DeviceCommand, ParserSchema, UploadedFile, Reading
 from .mqtt import send_command
 @admin.register(Device)
 class DeviceAdmin(admin.ModelAdmin):
@@ -43,3 +43,10 @@ class DeviceCommandAdmin(admin.ModelAdmin):
         obj.pk, obj.status, obj.result = cmd.pk, cmd.status, cmd.result
     def has_change_permission(self, request, obj=None): return False
     def has_delete_permission(self, request, obj=None): return False
+
+@admin.register(UploadedFile)
+class UploadedFileAdmin(admin.ModelAdmin):
+    list_display = ("id", "device", "name", "size", "sha256", "received_at")
+    list_filter = ("device",)
+    readonly_fields = tuple(f.name for f in UploadedFile._meta.fields)
+    def has_add_permission(self, request): return False

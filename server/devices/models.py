@@ -93,3 +93,14 @@ class DeviceCommand(models.Model):
     acked_at = models.DateTimeField(null=True, blank=True)
     class Meta: ordering = ["-id"]
     def __str__(self): return f"{self.device.device_id} {self.action} #{self.pk}"
+
+
+class UploadedFile(models.Model):
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="files")
+    name = models.CharField(max_length=255)
+    file = models.FileField(upload_to="device_files/%Y/%m/")
+    size = models.PositiveIntegerField()
+    sha256 = models.CharField(max_length=64)
+    received_at = models.DateTimeField(auto_now_add=True)
+    class Meta: ordering = ["-id"]
+    def __str__(self): return f"{self.device.device_id}/{self.name}"

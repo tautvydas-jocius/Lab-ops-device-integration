@@ -38,8 +38,11 @@ services:
       DEBUG: "0"
       SECRET_KEY: ${SECRET_KEY:-local-dev-change-me}
       CONTROL_API_TOKEN: ${CONTROL_API_TOKEN:-}
+      MEDIA_ROOT: /data/media
     ports:
       - "127.0.0.1:8011:8000"
+    volumes:
+      - media-data:/data/media
     depends_on:
       db: {condition: service_healthy}
       mosquitto: {condition: service_healthy}
@@ -62,5 +65,6 @@ services:
       mosquitto: {condition: service_healthy}
     profiles: ["sim"]
 volumes:
+  media-data:
   postgres-data:
   mosquitto-data:

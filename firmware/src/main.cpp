@@ -4,6 +4,17 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <mbedtls/md.h>
+#include <HTTPClient.h>
+#if __has_include(<esp_eap_client.h>)
+#include <esp_eap_client.h>  // Arduino-ESP32 3.x / IDF 5
+#define EAP_SET(id, user, pass) do { esp_eap_client_set_identity((const uint8_t *)id, strlen(id)); esp_eap_client_set_username((const uint8_t *)user, strlen(user)); esp_eap_client_set_password((const uint8_t *)pass, strlen(pass)); esp_wifi_sta_enterprise_enable(); } while (0)
+#else
+#include <esp_wpa2.h>  // Arduino-ESP32 2.x
+#define EAP_SET(id, user, pass) do { esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)id, strlen(id)); esp_wifi_sta_wpa2_ent_set_username((uint8_t *)user, strlen(user)); esp_wifi_sta_wpa2_ent_set_password((uint8_t *)pass, strlen(pass)); esp_wifi_sta_wpa2_ent_enable(); } while (0)
+#endif
+#ifdef USB_MSC_UPLOAD
+#include "usb_drop.h"
+#endif
 #include "secrets.h"
 
 #define UART_RX 18
@@ -15,7 +26,7 @@ PubSubClient mqtt(network);
 Preferences prefs;
 String rawTopic, configTopic, statusTopic, cmdTopic, ackTopic;
 uint32_t lastCmdId = 0;
-String wifiSsid = WIFI_SSID, wifiPass = WIFI_PASS;  // NVS namespace "wifi" overrides secrets.h defaults
+String wifiSsid = WIFI_SSID, wifiPass = WIFI_PASS, wifiUser, wifiIdent;  // user set => WPA2-Enterprise (PEAP/MSCHAPv2)  // NVS namespace "wifi" overrides secrets.h defaults
 bool wifiTrial = false;  // booted on pending creds; revert unless MQTT connects in time
 uint32_t bootMs = 0;
 const uint32_t TRIAL_MS = 45000;
@@ -52,7 +63,7 @@ void loadConfig() {
   applySerial();
 }
 void abandonTrial() {
-  prefs.begin("wifi", false); prefs.remove("nssid"); prefs.remove("npass"); prefs.end(); delay(100); ESP.restart();
+  prefs.begin("wifi", false); prefs.remove("nssid"); prefs.remove("npass"); prefs.remove("nuser"); prefs.remove("nident"); prefs.end(); delay(100); ESP.restart();
 }
 void clearConfig() {  // keep cmdid so old signed commands stay unreplayable
   prefs.begin("scale", false); uint32_t keep = prefs.getUInt("cmdid", 0); prefs.clear(); prefs.putUInt("cmdid", keep); prefs.end();
@@ -80,9 +91,10 @@ void onCommand(byte *payload, unsigned int length) {
   else if (action == "send_serial") { Serial1.print(arg); ack(id, true, "sent " + String(arg.length()) + " bytes"); }
   else if (action == "set_wifi") {
     JsonDocument w; String ns, np;
-    if (deserializeJson(w, arg) || !(ns = String((const char *)(w["ssid"] | ""))).length() || ns.length() > 32) { ack(id, false, "arg must be {\"ssid\":..,\"pass\":..}"); return; }
+    if (deserializeJson(w, arg) || !(ns = String((const char *)(w["ssid"] | ""))).length() || ns.length() > 32) { ack(id, false, "arg must be {\"ssid\":..,\"pass\":..[,\"eap_user\":..,\"eap_identity\":..]}"); return; }
     np = String((const char *)(w["pass"] | ""));
-    prefs.begin("wifi", false); prefs.putString("nssid", ns); prefs.putString("npass", np); prefs.end();
+    prefs.begin("wifi", false); prefs.putString("nssid", ns); prefs.putString("npass", np);
+    prefs.putString("nuser", String((const char *)(w["eap_user"] | ""))); prefs.putString("nident", String((const char *)(w["eap_identity"] | ""))); prefs.end();  // eap_user => WPA2-Enterprise, "pass" is then the EAP password
     ack(id, true, "stored pending creds, rebooting; reverts in " + String(TRIAL_MS / 1000) + "s if MQTT does not connect"); mqtt.loop(); delay(200); ESP.restart();
   }
   else if (action == "reset_config") { clearConfig(); ack(id, true, "device config cleared, rebooting (retained config will be re-applied)"); mqtt.loop(); delay(200); ESP.restart(); }
@@ -106,16 +118,25 @@ void onMessage(char *topic, byte *payload, unsigned int length) {
 // promoted after MQTT connects; if the trial fails the MCU reverts and reboots, so a typo can't strand the device.
 void loadWifi() {
   prefs.begin("wifi", false);
-  String ps = prefs.getString("nssid", "");
-  if (ps.length()) { wifiSsid = ps; wifiPass = prefs.getString("npass", ""); wifiTrial = true; }
-  else if (prefs.getString("ssid", "").length()) { wifiSsid = prefs.getString("ssid", ""); wifiPass = prefs.getString("pass", ""); }
+  const char *k = prefs.getString("nssid", "").length() ? "n" : "";  // pending keys are prefixed "n"
+  if (k[0] || prefs.getString("ssid", "").length()) {
+    wifiSsid = prefs.getString((String(k) + "ssid").c_str(), ""); wifiPass = prefs.getString((String(k) + "pass").c_str(), "");
+    wifiUser = prefs.getString((String(k) + "user").c_str(), ""); wifiIdent = prefs.getString((String(k) + "ident").c_str(), "");
+    wifiTrial = k[0] == 'n';
+  }
   prefs.end();
 }
 void commitWifi() {
-  prefs.begin("wifi", false); prefs.putString("ssid", wifiSsid); prefs.putString("pass", wifiPass); prefs.remove("nssid"); prefs.remove("npass"); prefs.end(); wifiTrial = false;
+  prefs.begin("wifi", false); prefs.putString("ssid", wifiSsid); prefs.putString("pass", wifiPass); prefs.putString("user", wifiUser); prefs.putString("ident", wifiIdent);
+  prefs.remove("nssid"); prefs.remove("npass"); prefs.remove("nuser"); prefs.remove("nident"); prefs.end(); wifiTrial = false;
+}
+void beginWifi() {
+  WiFi.mode(WIFI_STA);
+  if (wifiUser.length()) { EAP_SET(wifiIdent.length() ? wifiIdent.c_str() : wifiUser.c_str(), wifiUser.c_str(), wifiPass.c_str()); WiFi.begin(wifiSsid.c_str()); }
+  else WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
 }
 void connectWifi() {
-  if (WiFi.status() == WL_CONNECTED) return; WiFi.mode(WIFI_STA); WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+  if (WiFi.status() == WL_CONNECTED) return; beginWifi();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
@@ -133,12 +154,19 @@ void setup() {
   Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack";
   prefs.begin("scale", true); lastCmdId = prefs.getUInt("cmdid", 0); prefs.end();
   bootMs = millis(); loadWifi();
-  loadConfig(); WiFi.mode(WIFI_STA); WiFi.begin(wifiSsid.c_str(), wifiPass.c_str()); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(512);
+  loadConfig();
+#ifdef USB_MSC_UPLOAD
+  usbDropBegin();
+#endif
+  beginWifi(); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(512);
 }
 void loop() {
   if (WiFi.status() != WL_CONNECTED) connectWifi();
   if (!mqtt.connected()) connectMqtt();
   mqtt.loop();
+#ifdef USB_MSC_UPLOAD
+  usbDropPoll();
+#endif
   if (enabled && pollCommand.length() && millis() - lastPoll >= intervalMs) { Serial1.print(pollCommand); lastPoll = millis(); }
   while (Serial1.available()) {
     char c = (char)Serial1.read(); lineBuffer += c;

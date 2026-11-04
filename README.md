@@ -59,6 +59,16 @@ Server publishes `{prefix}/{id}/cmd` `{"id","action","arg","sig"}`; the MCU answ
 
 The MCU keeps Wi-Fi in flash (NVS namespace `wifi`); `secrets.h` is only the fallback. `set_wifi` stores the new credentials as *pending*, reboots, and trials them: they become active only after MQTT connects, otherwise the MCU drops them after 45 s and reboots on the old ones, so a typo cannot strand a remote device. The password is sent signed but unencrypted over MQTT (use TLS) and is never saved in Device commands history, only the SSID. `reset_config` wipes the stored serial/poll config (the retained server config is re-applied on reconnect); `factory_reset` also wipes stored Wi-Fi, returning to `secrets.h`. Both keep the replay counter.
 
+### WPA2-Enterprise (EAP) Wi-Fi
+
+`set_wifi` also takes `eap_user` (and optional `eap_identity`): `{"ssid":"corp","pass":"<EAP password>","eap_user":"user@corp","eap_identity":"anon@corp"}` joins PEAP/MSCHAPv2 networks, with the same pending-then-commit rollback as above. No server certificate is validated (certificate-pinned EAP-TLS is not implemented). History records only `ssid=.. eap=<user>`.
+
+### USB drop drive (CSV / PDF / TXT straight to the server)
+
+With `USB_MSC_UPLOAD` defined, the ESP32-S3's native USB port (GPIO19/20) shows up as a 4 MB flash drive named `LABOPS DROP` (RAM-backed FAT12 in PSRAM; 256 KB without PSRAM; empty after every reboot). Copy a `.csv`, `.pdf` or `.txt` onto it; about 2 s after the host stops writing, the MCU reads the file and POSTs it to `POST /api/devices/{id}/files/?name=...` with `Authorization: Bearer <device command token>`. Unchanged files are not re-sent; edited ones are; a failed upload is retried. Set `UPLOAD_BASE_URL` in `secrets.h` to an address the MCU can reach (the compose default binds loopback only).
+
+The server checks the token, accepts only those three types (PDFs must start `%PDF`, text must not contain NUL), caps size at 8 MB, sanitizes the name and stores the file in the `media-data` volume. Browse in admin (Uploaded files) or via the API with `CONTROL_API_TOKEN`: `GET /api/devices/{id}/files/list/`, `GET /api/files/{pk}/`. Needs `ARDUINO_USB_MODE=0` (already in `platformio.ini`); pick `board_build.arduino.memory_type` to match your PSRAM.
+
 ## Firmware
 
 Install PlatformIO, copy `firmware/include/secrets.example.h` to `firmware/include/secrets.h`, set WiFi/MQTT values and `DEVICE_ID`, then build and flash from `firmware/`:

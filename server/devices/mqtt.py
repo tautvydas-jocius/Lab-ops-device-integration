@@ -21,7 +21,7 @@ def send_command(device, action, arg="", by=""):
     from .models import DeviceCommand
     stored = arg
     if action == "set_wifi":  # never persist the Wi-Fi password: keep only the SSID in history
-        try: stored = "ssid=" + str(json.loads(arg)["ssid"])
+        try: w = json.loads(arg); stored = "ssid=" + str(w["ssid"]) + (" eap=" + str(w["eap_user"]) if w.get("eap_user") else "")
         except (ValueError, KeyError, TypeError): stored = "(invalid)"
     cmd = DeviceCommand.objects.create(device=device, action=action, arg=stored, created_by=by)
     try: publish_command(cmd, arg)

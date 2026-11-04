@@ -94,3 +94,16 @@ class DeviceIntegrationTests(TestCase):
         cmd.refresh_from_db()
         self.assertEqual(cmd.arg, "ssid=lab")
         self.assertIn("hunter2", single.call_args.args[1])
+
+    def test_file_upload_token_and_validation(self):
+        import tempfile
+        d = Device.objects.create(device_id="f1", name="F", parser=self.mt)
+        url = "/api/devices/f1/files/"; ok = {"Authorization": f"Bearer {d.command_token}"}
+        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp):
+            self.assertEqual(self.client.post(url + "?name=a.csv", b"a,b\n1,2\n", content_type="application/octet-stream").status_code, 401)
+            self.assertEqual(self.client.post(url + "?name=a.exe", b"x", content_type="application/octet-stream", headers=ok).status_code, 415)
+            self.assertEqual(self.client.post(url + "?name=a.pdf", b"not pdf", content_type="application/octet-stream", headers=ok).status_code, 415)
+            r = self.client.post(url + "?name=../a%20b.csv", b"a,b\n1,2\n", content_type="application/octet-stream", headers=ok)
+            self.assertEqual(r.status_code, 201); self.assertEqual(r.json()["name"], "a_b.csv")
+            self.assertEqual(self.client.post(url + "?name=r.pdf", b"%PDF-1.4 x", content_type="application/octet-stream", headers=ok).status_code, 201)
+        self.assertEqual(d.files.count(), 2)
