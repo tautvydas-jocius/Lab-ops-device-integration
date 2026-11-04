@@ -46,4 +46,28 @@ check("csv (UTF-16, NULs) stored", "readings_utf16.csv" in names)
 check("pdf stored", "report.pdf" in names)
 check("excel stored", {"book.xlsx", "old.xls"} <= names, sorted(names))
 check("fake xlsx, fake pdf and .exe not stored", not ({"evil.pdf", "ignore.exe", "fake.xlsx"} & names), sorted(names))
+# ---- diagnostics: inject faults into the emulated MCU and check what Django learns (NVS persistence across reboots included)
+def chaos(what, n=3):
+    dj(f"import json, paho.mqtt.publish as P; P.single('lab/devices/{DEV}/emu', json.dumps({{'do': '{what}', 'n': {n}}}), hostname='mosquitto')")
+def diag():
+    return next(x for x in call("/diagnostics/")[1]["devices"] if x["device_id"] == DEV)
+def wait(cond, secs=20):
+    for _ in range(int(secs * 4)):
+        time.sleep(.25); d = diag()
+        if cond(d): return d
+    return diag()
+b0 = diag()["counters"]["boots"]
+chaos("brownout"); d = wait(lambda d: d["counters"]["brownout"] >= 1); check("brownout reboot recorded (counter + last_reset)", d["last_reset"] == "brownout" and d["counters"]["brownout"] == 1, d["counters"])
+check("counters persisted across reboot (boots incremented, earlier power_on kept)", d["counters"]["boots"] == b0 + 1 and d["counters"]["poweron"] >= 1, d["counters"])
+chaos("panic"); d = wait(lambda d: d["counters"]["panic"] >= 1); check("crash (panic) recorded", d["last_reset"] == "panic")
+chaos("power_off"); d = wait(lambda d: d["counters"]["poweron"] >= 2); check("power loss recorded (power_on again)", d["counters"]["poweron"] >= 2 and any("Lost power" in f["finding"] for f in d["findings"]), [f["finding"] for f in d["findings"]])
+r = run("reboot"); d = wait(lambda d: d["last_reset"] == "cmd_reboot"); check("commanded reboot is told apart from faults", d["last_reset"] == "cmd_reboot", d["last_reset"])
+chaos("wifi_drop", 3); d = wait(lambda d: d["counters"]["wifi_drops"] >= 1, 30); check("wifi drop counted with duration event", d["counters"]["wifi_drops"] == 1)
+chaos("mqtt_fail", 4); d = wait(lambda d: d["counters"]["mqtt_fails"] >= 1, 30); check("mqtt failure counted", d["counters"]["mqtt_fails"] >= 1)
+chaos("rssi", -88); d = wait(lambda d: d["rssi"] == -88); check("rssi poor flagged with advice", d["rssi_label"] == "poor" and any("Very weak Wi-Fi" in f["finding"] for f in d["findings"]))
+ev = dj(f"from devices.models import DeviceEvent as E; print(','.join(sorted(set(E.objects.filter(device__device_id='{DEV}').values_list('kind', flat=True)))))")
+check("event history has all kinds", {"boot", "wifi_drop", "mqtt_fail"} <= set(ev.split(",")), ev)
+check("score drops and verdict set", d["score"] < 100 and d["verdict"] in ("needs attention", "act now"), (d["score"], d["verdict"]))
+r = run("diag"); check("diag command acked", r["status"] == "ok", r["result"])
+order = [x["device_id"] for x in call("/diagnostics/?sort=rssi")[1]["devices"]]; check("sort by rssi API works", order[0] == DEV, order)
 sys.exit(0 if ok else 1)

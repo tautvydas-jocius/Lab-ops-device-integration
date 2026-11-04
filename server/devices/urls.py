@@ -10,5 +10,6 @@ urlpatterns = [
     path("files/<int:pk>/", views.file_download, name="file_download"),
     path("firmware/", views.firmware_list, name="firmware_list"),
     path("firmware/<int:pk>/", views.firmware_download, name="firmware_download"),
+    path("diagnostics/", views.diagnostics_api, name="diagnostics_api"),
     path("overview/", views.api_overview, name="overview"),
 ]

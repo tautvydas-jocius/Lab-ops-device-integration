@@ -1,0 +1,21 @@
+{% extends "admin/base_site.html" %}
+{% block extrastyle %}{{ block.super }}<style>
+.diag td,.diag th{padding:6px 10px;vertical-align:top}.diag .score{font-weight:700;font-size:1.1em}
+.pill{border-radius:10px;padding:1px 8px;font-size:.85em;color:#fff}.healthy{background:#2e7d32}.attn{background:#ef6c00}.act{background:#c62828}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%}.on{background:#2e7d32}.off{background:#999}.filters a{margin-right:10px}</style>{% endblock %}
+{% block content %}
+<p>{{ n_online }} of {{ n_total }} shown device(s) online. Sort:
+ <span class="filters"><a href="?sort=score">health</a><a href="?sort=rssi&dir=desc">RSSI</a><a href="?sort=location">location</a><a href="?sort=uptime">uptime</a><a href="?sort=name">name</a></span>
+ Show: <span class="filters"><a href="?sort={{ sort }}&online=1">online</a><a href="?sort={{ sort }}&online=0">offline</a>{% for l in locations %}<a href="?sort={{ sort }}&location={{ l|urlencode }}">{{ l }}</a>{% endfor %}<a href="?sort={{ sort }}">all</a></span></p>
+<table class="diag"><thead><tr><th></th><th>Device</th><th>Location</th><th>Score</th><th>RSSI</th><th>Uptime</th><th>Last reset</th><th>Boots</th><th>Wi-Fi drops</th><th>MQTT fails</th><th>Verdict / top finding</th></tr></thead><tbody>
+{% for r in rows %}{% with d=r.d c=r.d.diag_counters %}
+<tr><td><span class="dot {% if d.online %}on{% else %}off{% endif %}" title="{% if d.online %}online{% else %}offline{% endif %}"></span></td>
+<td><a href="{% url 'admin:devices_diagnostics_detail' d.device_id %}"><strong>{{ d.device_id }}</strong></a><br><small>{{ d.name }}</small></td>
+<td>{{ d.location|default:"-" }}</td><td class="score">{{ r.a.score }}</td>
+<td>{% if d.rssi is not None %}{{ d.rssi }} dBm<br><small>{{ r.label }}</small>{% else %}-{% endif %}</td>
+<td>{% if d.uptime_s is not None %}{{ d.uptime_s|floatformat:0 }} s{% else %}-{% endif %}</td>
+<td>{{ d.last_reset|default:"-" }}</td><td>{{ c.boots|default:"-" }}</td><td>{{ c.wifi_drops|default:0 }}</td><td>{{ c.mqtt_fails|default:0 }}</td>
+<td><span class="pill {% if r.a.verdict == 'healthy' %}healthy{% elif r.a.verdict == 'act now' %}act{% else %}attn{% endif %}">{{ r.a.verdict }}</span>
+{% if r.top %}<br>{{ r.top.finding }}<br><small>{{ r.top.advice }}</small>{% endif %}</td></tr>
+{% endwith %}{% empty %}<tr><td colspan="11">No devices.</td></tr>{% endfor %}</tbody></table>
+{% endblock %}

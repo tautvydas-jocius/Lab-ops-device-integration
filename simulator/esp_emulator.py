@@ -6,7 +6,7 @@ NOT emulated: the C++ FAT12 parser and real radio; those need the hardware or a 
 import argparse, hashlib, hmac, json, os, random, sys, threading, time
 import paho.mqtt.client as mqtt
 
-FW0 = "1.0.0"; TRIAL_S = 6  # firmware uses 45 s; shortened so tests run fast
+FW0 = "1.0.0"; TRIAL_S = 6; DIAG_S = 3  # firmware heartbeat is 30 s; shortened for tests  # firmware uses 45 s; shortened so tests run fast
 ap = argparse.ArgumentParser()
 ap.add_argument("--id", default="bal-01"); ap.add_argument("--token", required=True, help="device command token from Django admin")
 ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--port", type=int, default=1884); ap.add_argument("--prefix", default="lab/devices")
@@ -28,11 +28,21 @@ def hmac_hex(msg): return hmac.new(A.token.encode(), msg.encode(), hashlib.sha25
 
 class Mcu:
     def __init__(self):
-        self.lock = threading.Lock(); self.ota_evt = threading.Event(); self.ota_chunk = None; self.ack_evt = {}; self.sent = {}; self.stop = False
+        self.next_reason = None; self.lock = threading.Lock(); self.ota_evt = threading.Event(); self.ota_chunk = None; self.ack_evt = {}; self.sent = {}; self.stop = False
         self.boot()
     def boot(self):
         """Emulates power-up: load NVS, pick Wi-Fi (pending creds => trial), build MQTT client."""
+        self.boot_t = time.monotonic(); self.rssi = -58; self.diag_full = True
         n = nvs_load(); self.nvs = n; self.fw = n.get("fw", FW0)
+        d = n.setdefault("diag", {"c": {k: 0 for k in ("boots", "poweron", "brownout", "panic", "wdt", "sw", "wifi_drops", "mqtt_fails")}, "evn": 0, "ring": {}, "intent": "", "upck": 0})
+        d["c"]["boots"] += 1; self.boot_no = d["c"]["boots"]; self.bid = "%08x" % random.getrandbits(32)
+        why = self.next_reason or ("sw:" + d["intent"] if d["intent"] else "power_on" if self.boot_no == 1 else "sw_unknown")
+        if why.startswith("sw:"): kind = why[3:]; d["c"]["sw"] += 1
+        else:
+            kind = why; key = {"power_on": "poweron", "brownout": "brownout", "panic": "panic", "watchdog": "wdt"}.get(kind)
+            if key: d["c"][key] += 1
+        prev_up = d["upck"]; d["intent"] = ""; d["upck"] = 0; self.next_reason = None; self.last_reset = kind; self.wifi_down_at = None
+        self.event("boot", f"{kind} prev_uptime={prev_up}s", d); self.save()
         self.cfg = {"enabled": True, "poll_interval_ms": 1000, "config_version": n.get("version", 0)}
         self.cfg.update(n.get("cfg", {})); self.last_cmd = n.get("cmdid", 0)
         w = n.get("wifi", {}); p = w.get("pending")
@@ -45,19 +55,28 @@ class Mcu:
         self.client.on_connect = self.on_connect; self.client.on_message = self.on_message
         self.mqtt_up = False
         if self.wifi_ok: self.client.connect(A.host, A.port, 60); self.client.loop_start()
+    def event(self, kind, detail, d=None):
+        d = d or self.nvs["diag"]; d["evn"] += 1; n = d["evn"]
+        d["ring"][str(n % 16)] = f"{n}|{self.bid}|{self.boot_no}|{int(time.monotonic() - self.boot_t) if hasattr(self, 'boot_t') else 0}|{kind}|{detail}"[:160]
+        self.diag_full = True; log(f"event {kind}: {detail}")
+    def publish_diag(self):
+        d = self.nvs["diag"]; up = int(time.monotonic() - self.boot_t)
+        msg = {"up": up, "rssi": self.rssi, "heap": 210000 - random.randrange(0, 4000), "minheap": 180000, "boot": self.boot_no, "reason": self.last_reset, "fw": self.fw, "ch": 6, "c": d["c"]}
+        if self.diag_full: msg["ev"] = list(d["ring"].values())
+        self.client.publish(T("diag"), json.dumps(msg), retain=True); self.diag_full = False
     def save(self, **kw):
         self.nvs.update(kw); nvs_save(self.nvs)
     def status(self): self.client.publish(T("status"), json.dumps({"state": "online", "config_version": self.cfg["config_version"], "fw": self.fw}), qos=1, retain=True)
     def on_connect(self, c, u, f, rc, p):
         self.mqtt_up = True
         for t in ("config", "cmd", "file_ack"): c.subscribe(T(t), 1)
-        c.subscribe(T("ota/#"))
+        c.subscribe(T("ota/#")); c.subscribe(T("emu"))
         if self.trial:
             w = self.nvs.get("wifi", {}); w["active"] = w.pop("pending"); self.save(wifi=w); self.trial = False; log("trial Wi-Fi + MQTT ok -> committed")
         self.status(); log("mqtt connected")
     def ack(self, id_, ok, result): self.client.publish(T("ack"), json.dumps({"id": id_, "ok": ok, "result": result})); log(f"ack id={id_} ok={ok} {result}")
     def reboot(self, why):
-        log(f"REBOOT ({why})"); self.client.loop_stop(); self.client.disconnect(); time.sleep(1); self.boot()
+        log(f"REBOOT ({why})"); self.nvs["diag"]["intent"] = why; self.nvs["diag"]["upck"] = int(time.monotonic() - self.boot_t); self.save(); self.client.loop_stop(); self.client.disconnect(); time.sleep(1); self.boot()
     def on_message(self, c, u, msg):
         if msg.topic.startswith(T("ota/")):
             self.ota_chunk = (int(msg.topic.rsplit("/", 1)[1]), bytes(msg.payload)); self.ota_evt.set(); return
@@ -69,6 +88,7 @@ class Mcu:
         elif msg.topic == T("config"):
             self.cfg.update({k: d[k] for k in ("enabled", "poll_interval_ms", "config_version") if k in d}); self.save(version=self.cfg["config_version"], cfg=self.cfg)
             log(f"config applied v{self.cfg['config_version']} enabled={self.cfg['enabled']} poll={self.cfg['poll_interval_ms']}"); self.status()
+        elif msg.topic == T("emu"): threading.Thread(target=self.chaos, args=(d,), daemon=True).start()
         elif msg.topic == T("cmd"): threading.Thread(target=self.command, args=(d,), daemon=True).start()
     def command(self, d):
         id_, action, arg, sig = d.get("id", 0), d.get("action", ""), d.get("arg", ""), d.get("sig", "")
@@ -78,7 +98,8 @@ class Mcu:
         if action == "ping": self.ack(id_, True, f"pong fw={self.fw} up={int(time.monotonic()-self.boot_t)}s rssi=-52")
         elif action == "poll_now": self.ack(id_, True, "polled")
         elif action == "send_serial": self.ack(id_, True, f"sent {len(arg)} bytes")
-        elif action == "reboot": self.ack(id_, True, "rebooting"); time.sleep(.2); self.reboot("reboot cmd")
+        elif action == "reboot": self.ack(id_, True, "rebooting"); time.sleep(.2); self.reboot("cmd_reboot")
+        elif action == "diag": self.diag_full = True; self.publish_diag(); self.ack(id_, True, "diagnostics published")
         elif action == "ota": self.ota(id_, arg)
         elif action == "set_wifi":
             try: w = json.loads(arg); assert w["ssid"] and len(w["ssid"]) <= 32
@@ -86,10 +107,21 @@ class Mcu:
             nv = self.nvs.get("wifi", {}); nv["pending"] = {"ssid": w["ssid"], "pass": w.get("pass", ""), "eap_user": w.get("eap_user", "")}; self.save(wifi=nv)
             self.ack(id_, True, f"stored pending creds, rebooting; reverts in {TRIAL_S}s if MQTT does not connect"); time.sleep(.2); self.reboot("set_wifi")
         elif action in ("reset_config", "factory_reset"):
-            keep = {"cmdid": self.last_cmd}
+            keep = {"cmdid": self.last_cmd, "diag": self.nvs["diag"], "fw": self.fw}
             if action == "reset_config": keep["wifi"] = self.nvs.get("wifi", {})
             self.nvs = keep; nvs_save(keep); self.ack(id_, True, "cleared, rebooting"); time.sleep(.2); self.reboot(action)
         else: self.ack(id_, False, "unknown action")
+    def chaos(self, d):
+        """Test-only fault injection (topic <id>/emu): brownout|panic|watchdog|power_off|wifi_drop(secs)|mqtt_fail(secs)|rssi(value)."""
+        what, n = d.get("do"), d.get("n", 3); log(f"CHAOS {what} {n}")
+        if what in ("brownout", "panic", "watchdog", "power_off"): self.next_reason = "power_on" if what == "power_off" else what; self.reboot(f"chaos_{what}")
+        elif what == "rssi": self.rssi = int(n)
+        elif what in ("wifi_drop", "mqtt_fail"):
+            dc = self.nvs["diag"]; self.client.loop_stop(); self.client.disconnect(); self.mqtt_up = False; t0 = time.monotonic(); time.sleep(n)
+            self.client.connect(A.host, A.port, 60); self.client.loop_start(); dt = time.monotonic() - t0
+            if what == "wifi_drop": dc["c"]["wifi_drops"] += 1; self.event("wifi_drop", f"reason=200 down={dt:.1f}s")
+            else: dc["c"]["mqtt_fails"] += max(1, int(n // 2)); self.event("mqtt_fail", f"fails={max(1, int(n // 2))} last_state=-2 down={dt:.1f}s")
+            self.save()
     def ota(self, id_, arg):
         """Mirrors firmware otaRun(): pull 4 KB chunks over MQTT, hash while 'writing', switch version only if SHA-256 matches the signed arg."""
         try: o = json.loads(arg); img, size, ver, sha = int(o["image"]), int(o["size"]), o["version"], o["sha256"]; assert size and len(sha) == 64
@@ -127,7 +159,8 @@ class Mcu:
         while not self.stop:
             now = time.monotonic()
             if self.trial and now - self.boot_t > TRIAL_S:  # firmware: abandonTrial()
-                w = self.nvs.get("wifi", {}); w.pop("pending", None); self.save(wifi=w); log("trial FAILED -> reverting to previous Wi-Fi"); self.client.loop_stop(); self.boot(); continue
+                w = self.nvs.get("wifi", {}); w.pop("pending", None); self.save(wifi=w); log("trial FAILED -> reverting to previous Wi-Fi"); self.client.loop_stop(); self.nvs["diag"]["intent"] = "wifi_trial_revert"; self.save(); self.boot(); continue
+            if self.mqtt_up and now - getattr(self, 'last_diag', 0) > DIAG_S: self.last_diag = now; self.publish_diag()
             if self.mqtt_up and self.cfg.get("enabled") and now - self.last_emit >= max(.1, self.cfg["poll_interval_ms"] / 1000):
                 self.last_emit = now; self.seq += 1
                 self.client.publish(T("raw"), json.dumps({"line": f"S S      {12.3456 + random.uniform(-.001, .001):0.4f} g", "seq": self.seq, "uptime_ms": int((now - self.boot_t) * 1000)}))

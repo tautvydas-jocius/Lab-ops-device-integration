@@ -151,3 +151,22 @@ class DeviceIntegrationTests(TestCase):
             self.assertEqual(a.version, "1.2.0"); self.assertTrue(b.version.startswith("auto-")); self.assertEqual(c.version, "2.0.0-rc1")
             self.assertEqual(FirmwareImage.find("v1.2.0"), a); self.assertEqual(FirmwareImage.find("1.2.0"), a)
             self.assertEqual(FirmwareImage.find(str(b.pk)), b); self.assertEqual(FirmwareImage.find(""), c); self.assertIsNone(FirmwareImage.find("9.9"))
+
+    def test_diagnostics_ingest_and_assessment(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from .diag_ingest import ingest_diag
+        from .diagnostics import assess, rssi_label
+        from .models import DeviceEvent
+        d = Device.objects.create(device_id="g1", name="G", location="Lab A", parser=self.mt, online=True)
+        msg = {"up": 120, "rssi": -85, "heap": 150000, "minheap": 15000, "boot": 7, "reason": "brownout",
+               "c": {"boots": 7, "poweron": 3, "brownout": 2, "panic": 0, "wdt": 0, "sw": 2, "wifi_drops": 5, "mqtt_fails": 0},
+               "ev": ["1|aa|1|0|boot|power_on prev_uptime=0s", "2|aa|1|60|wifi_drop|reason=200 down=3.0s", "3|bb|2|0|boot|brownout prev_uptime=61s"]}
+        self.assertEqual(ingest_diag(d, msg), 3); self.assertEqual(ingest_diag(d, msg), 0)  # replayed ring is de-duplicated
+        d.refresh_from_db(); self.assertEqual((d.rssi, d.last_reset, d.boot_no), (-85, "brownout", 7))
+        a = assess(d, list(d.events.all()), [-85] * 5)
+        text = " | ".join(f["finding"] for f in a["findings"])
+        self.assertEqual(rssi_label(-85), "poor"); self.assertIn("brownout", text); self.assertIn("Lost power 2", text); self.assertIn("Low memory", text)
+        self.assertEqual(a["verdict"], "act now"); self.assertLess(a["score"], 50)
+        healthy = Device.objects.create(device_id="g2", name="H", parser=self.mt, online=True, diag_at=timezone.now(), rssi=-55, uptime_s=90000, min_free_heap=150000, diag_counters={"boots": 1, "poweron": 1})
+        self.assertEqual(assess(healthy, [], [-55] * 20), {"score": 100, "verdict": "healthy", "findings": []})

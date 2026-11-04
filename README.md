@@ -99,8 +99,24 @@ Captured from a live run: the Django stack (broker, Postgres, web, `mqtt_listene
 export CONTROL_API_TOKEN=e2etoken123 && docker compose up -d --build web listener mosquitto db
 TOKEN=$(docker compose exec -T web python manage.py shell -c 'from devices.models import Device; print(Device.objects.get(device_id="bal-01").command_token)')
 uv run --with paho-mqtt python simulator/esp_emulator.py --id bal-01 --token "$TOKEN"   # pane 1
-python simulator/e2e.py "$CONTROL_API_TOKEN"                                             # pane 2 (16 checks)
+python simulator/e2e.py "$CONTROL_API_TOKEN"                                             # pane 2 (32 checks, including fault injection: brownout, panic, power loss, Wi-Fi drop, MQTT failure, weak RSSI)
 ```
+
+### Diagnostics (Django admin)
+
+**Admin -> Devices -> Diagnostics** ranks every device by health score with the top finding and what to do about it. Sort by health, RSSI, location, uptime or name; show online/offline or one location. The normal Devices list also has RSSI, uptime and last-reset columns with filters (online, location, last reset reason, Wi-Fi signal band). Click a device for counters, an RSSI trend, advice and its event history. Same data as JSON: `GET /api/diagnostics/?sort=rssi|uptime|location|score` (with `CONTROL_API_TOKEN`). Action **Request full diagnostics** forces a fresh report.
+
+![Diagnostics overview](docs/screenshots/server-diagnostics.png)
+![Diagnostics, one device](docs/screenshots/server-diagnostics-device.png)
+
+**What the MCU records and why reboots can be told apart.** At every boot it classifies `esp_reset_reason()`: `power_on` (supply lost, mains/USB unplugged, or first flash), `brownout` (supply dipped), `panic` (crash), `watchdog`, `reset_pin`, or a software reboot with the *reason it was asked for* (`cmd_reboot`, `ota`, `set_wifi`, `reset_config`, `factory_reset`, `wifi_trial_revert`, else `sw_unknown`). It also logs Wi-Fi drops (disconnect reason code and outage length) and MQTT failures/drops (PubSubClient state code, failed attempts, outage length).
+
+**Persistence policy (saving vs constant MQTT updates): both, split by what changes.**
+- Persistent on the MCU (NVS `diag`): counters (boots, power_on, brownout, panic, watchdog, software, Wi-Fi drops, MQTT fails) and a ring of the last 16 events, plus an uptime checkpoint every 10 minutes so the next boot knows how long the previous run lasted. Written only when something happens, so flash wear stays negligible. This survives reboots and power loss and is replayed to the server, which de-duplicates by `(device, boot id, event number)`.
+- Live values (RSSI, uptime, free heap, minimum heap, channel) are not stored on the MCU: a retained heartbeat on `{prefix}/{id}/diag` every 30 s carries them and Django keeps the history (7 days, pruned by the listener). The full event list rides along only after a boot, an event, or the `diag` command.
+- The MCU has no wall clock; events carry boot number and uptime and Django stamps them on arrival (so an event from before a long outage is time-stamped late).
+
+**Health scoring** (`devices/diagnostics.py`): offline, RSSI band (good >= -67, ok, weak, poor < -82), unstable signal, brownouts (suggests PSU/cable/capacitor), crashes, watchdog resets, power losses, >3 Wi-Fi drops/day (weak signal vs AP problem), >3 MQTT failures/day while Wi-Fi is up (broker), reboot loops, low minimum heap. Thresholds are starting points, tune them to your site.
 
 ### OTA firmware updates (from the Django admin)
 

@@ -68,8 +68,72 @@ void loadConfig() {
   parity = prefs.getChar("parity", 'N'); terminator = prefs.getString("term", "\r\n"); pollCommand = prefs.getString("poll", ""); enabled = prefs.getBool("enabled", true); prefs.end();
   applySerial();
 }
+// ---- Diagnostics -----------------------------------------------------------------------------------------------
+// Persistence policy: events and counters go to NVS only when something happens (reboot, Wi-Fi/MQTT outage ends) plus an
+// uptime checkpoint every 10 min, so flash wear stays negligible (<1000 writes/day). Live values (RSSI, heap, uptime)
+// are NOT stored on the MCU: they are published every DIAG_EVERY_MS on <prefix>/<id>/diag and kept by Django.
+#define DIAG_EVERY_MS 30000
+#define DIAG_RING 16
+String diagTopic, bootId, lastResetKind;
+uint32_t bootNo = 0, evN = 0, cBoots = 0, cPoweron = 0, cBrownout = 0, cPanic = 0, cWdt = 0, cSw = 0, cWifiDrops = 0, cMqttFails = 0;
+uint32_t lastDiag = 0, lastCheckpoint = 0, wifiDownSince = 0, mqttDownSince = 0, mqttStreakFails = 0; int wifiLastReason = 0, mqttLastState = 0;
+bool wifiUpOnce = false, diagDirty = true, diagFull = true, wifiDropPending = false; uint32_t wifiDropMs = 0;
+void diagSaveCounters() {
+  prefs.begin("diag", false); prefs.putUInt("boots", cBoots); prefs.putUInt("poweron", cPoweron); prefs.putUInt("brownout", cBrownout); prefs.putUInt("panic", cPanic);
+  prefs.putUInt("wdt", cWdt); prefs.putUInt("sw", cSw); prefs.putUInt("wdrops", cWifiDrops); prefs.putUInt("mfails", cMqttFails); prefs.putUInt("evn", evN); prefs.end();
+}
+void diagEvent(const char *kind, const String &detail) {  // ring buffer in NVS: slot = n % DIAG_RING, value "n|bid|boot|uptime_s|kind|detail"
+  evN++; String v = String(evN) + "|" + bootId + "|" + String(bootNo) + "|" + String(millis() / 1000) + "|" + kind + "|" + detail.substring(0, 80);
+  prefs.begin("diag", false); prefs.putString((String("e") + String(evN % DIAG_RING)).c_str(), v); prefs.putUInt("evn", evN); prefs.end(); diagDirty = true; diagFull = true;
+}
+void restartFor(const char *why) {  // every intentional reboot records why, so an unexplained SW reset can be told apart
+  prefs.begin("diag", false); prefs.putString("intent", why); prefs.putUInt("upck", millis() / 1000); prefs.end(); delay(100); ESP.restart();
+}
+void diagBoot() {
+  bootId = String((uint32_t)esp_random(), HEX);
+  prefs.begin("diag", false);
+  bootNo = prefs.getUInt("boots", 0) + 1; cBoots = bootNo; cPoweron = prefs.getUInt("poweron", 0); cBrownout = prefs.getUInt("brownout", 0); cPanic = prefs.getUInt("panic", 0);
+  cWdt = prefs.getUInt("wdt", 0); cSw = prefs.getUInt("sw", 0); cWifiDrops = prefs.getUInt("wdrops", 0); cMqttFails = prefs.getUInt("mfails", 0); evN = prefs.getUInt("evn", 0);
+  String intent = prefs.getString("intent", ""); prefs.remove("intent"); uint32_t prevUp = prefs.getUInt("upck", 0); prefs.putUInt("upck", 0); prefs.end();
+  esp_reset_reason_t r = esp_reset_reason(); String kind;
+  switch (r) {
+    case ESP_RST_POWERON: kind = "power_on"; cPoweron++; break;              // supply was lost (mains/USB unplugged) or first flash
+    case ESP_RST_BROWNOUT: kind = "brownout"; cBrownout++; break;            // supply dipped below threshold
+    case ESP_RST_PANIC: kind = "panic"; cPanic++; break;                     // firmware crash / exception
+    case ESP_RST_INT_WDT: case ESP_RST_TASK_WDT: case ESP_RST_WDT: kind = "watchdog"; cWdt++; break;
+    case ESP_RST_SW: kind = intent.length() ? intent : "sw_unknown"; cSw++; break;  // intent = which of our own paths asked for the reboot
+    case ESP_RST_EXT: kind = "reset_pin"; break;                             // EN/reset button
+    case ESP_RST_DEEPSLEEP: kind = "deepsleep"; break;
+    default: kind = String("other_") + String((int)r);
+  }
+  lastResetKind = kind; diagSaveCounters();
+  diagEvent("boot", kind + " prev_uptime=" + String(prevUp) + "s");
+}
+void diagWifiEvent(WiFiEvent_t e, WiFiEventInfo_t info) {  // runs in the Wi-Fi task: record only, persist from loop()
+  if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) { if (wifiUpOnce && !wifiDownSince) { wifiDownSince = millis(); } wifiLastReason = info.wifi_sta_disconnected.reason; }
+  else if (e == ARDUINO_EVENT_WIFI_STA_GOT_IP) { if (wifiDownSince) { wifiDropMs = millis() - wifiDownSince; wifiDropPending = true; wifiDownSince = 0; } wifiUpOnce = true; }
+}
+void publishDiag() {
+  if (!mqtt.connected()) return;
+  JsonDocument d; d["up"] = millis() / 1000; d["rssi"] = WiFi.RSSI(); d["heap"] = ESP.getFreeHeap(); d["minheap"] = ESP.getMinFreeHeap(); d["boot"] = bootNo; d["reason"] = lastResetKind; d["fw"] = FW_VERSION; d["ch"] = WiFi.channel();
+  JsonObject c = d["c"].to<JsonObject>(); c["boots"] = cBoots; c["poweron"] = cPoweron; c["brownout"] = cBrownout; c["panic"] = cPanic; c["wdt"] = cWdt; c["sw"] = cSw; c["wifi_drops"] = cWifiDrops; c["mqtt_fails"] = cMqttFails;
+  if (diagFull) {
+    JsonArray ev = d["ev"].to<JsonArray>(); prefs.begin("diag", true);
+    for (int i = 0; i < DIAG_RING; i++) { String v = prefs.getString((String("e") + String(i)).c_str(), ""); if (v.length()) ev.add(v); }
+    prefs.end();
+  }
+  String out; serializeJson(d, out); if (mqtt.publish(diagTopic.c_str(), out.c_str(), true)) { diagFull = false; diagDirty = false; }
+}
+void diagLoop() {  // called from loop()
+  if (wifiDropPending) {
+    wifiDropPending = false; cWifiDrops++; diagSaveCounters();
+    diagEvent("wifi_drop", "reason=" + String(wifiLastReason) + " down=" + String(wifiDropMs / 1000.0f, 1) + "s");
+  }
+  if (millis() - lastCheckpoint > 600000UL) { lastCheckpoint = millis(); prefs.begin("diag", false); prefs.putUInt("upck", millis() / 1000); prefs.end(); }
+  if (millis() - lastDiag > DIAG_EVERY_MS || (diagFull && mqtt.connected() && millis() - lastDiag > 2000)) { lastDiag = millis(); publishDiag(); }
+}
 void abandonTrial() {
-  prefs.begin("wifi", false); prefs.remove("nssid"); prefs.remove("npass"); prefs.remove("nuser"); prefs.remove("nident"); prefs.end(); delay(100); ESP.restart();
+  prefs.begin("wifi", false); prefs.remove("nssid"); prefs.remove("npass"); prefs.remove("nuser"); prefs.remove("nident"); prefs.end(); restartFor("wifi_trial_revert");
 }
 void clearConfig() {  // keep cmdid so old signed commands stay unreplayable
   prefs.begin("scale", false); uint32_t keep = prefs.getUInt("cmdid", 0); prefs.clear(); prefs.putUInt("cmdid", keep); prefs.end();
@@ -108,14 +172,15 @@ void onCommand(byte *payload, unsigned int length) {
     np = String((const char *)(w["pass"] | ""));
     prefs.begin("wifi", false); prefs.putString("nssid", ns); prefs.putString("npass", np);
     prefs.putString("nuser", String((const char *)(w["eap_user"] | ""))); prefs.putString("nident", String((const char *)(w["eap_identity"] | ""))); prefs.end();  // eap_user => WPA2-Enterprise, "pass" is then the EAP password
-    ack(id, true, "stored pending creds, rebooting; reverts in " + String(TRIAL_MS / 1000) + "s if MQTT does not connect"); mqtt.loop(); delay(200); ESP.restart();
+    ack(id, true, "stored pending creds, rebooting; reverts in " + String(TRIAL_MS / 1000) + "s if MQTT does not connect"); mqtt.loop(); delay(200); restartFor("set_wifi");
   }
-  else if (action == "reset_config") { clearConfig(); ack(id, true, "device config cleared, rebooting (retained config will be re-applied)"); mqtt.loop(); delay(200); ESP.restart(); }
+  else if (action == "reset_config") { clearConfig(); ack(id, true, "device config cleared, rebooting (retained config will be re-applied)"); mqtt.loop(); delay(200); restartFor("reset_config"); }
   else if (action == "factory_reset") {
     clearConfig(); prefs.begin("wifi", false); prefs.clear(); prefs.end();
-    ack(id, true, "factory reset: config + stored Wi-Fi cleared, rebooting on secrets.h Wi-Fi"); mqtt.loop(); delay(200); ESP.restart();
+    ack(id, true, "factory reset: config + stored Wi-Fi cleared, rebooting on secrets.h Wi-Fi"); mqtt.loop(); delay(200); restartFor("factory_reset");
   }
-  else if (action == "reboot") { ack(id, true, "rebooting"); mqtt.loop(); delay(200); ESP.restart(); }
+  else if (action == "diag") { diagFull = true; publishDiag(); ack(id, true, "diagnostics published"); }
+  else if (action == "reboot") { ack(id, true, "rebooting"); mqtt.loop(); delay(200); restartFor("cmd_reboot"); }
   else ack(id, false, "unknown action");
 }
 #ifdef USB_MSC_UPLOAD
@@ -143,7 +208,7 @@ void otaRun() {
   uint8_t h[32]; mbedtls_md_finish(&ctx, h); mbedtls_md_free(&ctx); String hex; char b[3]; for (int i = 0; i < 32; i++) { snprintf(b, 3, "%02x", h[i]); hex += b; }
   if (hex != otaSha) { Update.abort(); ack(otaCmdId, false, "sha256 mismatch, image discarded"); return; }
   if (!Update.end(true)) { ack(otaCmdId, false, String("finalize failed: ") + Update.errorString()); return; }
-  float secs = (millis() - t0) / 1000.0f; ack(otaCmdId, true, "flashed v" + otaVersion + " in " + String(secs, 1) + "s (" + String(otaSize / 1024.0f / secs, 1) + " KB/s), rebooting"); mqtt.loop(); delay(300); ESP.restart();
+  float secs = (millis() - t0) / 1000.0f; ack(otaCmdId, true, "flashed v" + otaVersion + " in " + String(secs, 1) + "s (" + String(otaSize / 1024.0f / secs, 1) + " KB/s), rebooting"); mqtt.loop(); delay(300); restartFor("ota");
 }
 void onMessage(char *topic, byte *payload, unsigned int length) {
   String t(topic);
@@ -185,28 +250,42 @@ void connectWifi() {
     if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
   }
 }
+bool mqttUpOnce = false;
 void connectMqtt() {
+  if (!mqttDownSince) { mqttDownSince = millis(); mqttStreakFails = 0; }
   while (!mqtt.connected()) {
     String will = "{\"state\":\"offline\",\"config_version\":" + String(configVersion) + ",\"fw\":\"" FW_VERSION "\"}";
-    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); mqtt.subscribe(fileAckTopic.c_str()); mqtt.subscribe((otaBase + "/#").c_str()); if (wifiTrial) commitWifi(); publishStatus("online"); }
-    else if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
-    else delay(2000);
+    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) {
+      mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); mqtt.subscribe(fileAckTopic.c_str()); mqtt.subscribe((otaBase + "/#").c_str());
+      if (wifiTrial) commitWifi();
+      publishStatus("online");
+      if (mqttUpOnce && (mqttStreakFails || millis() - mqttDownSince > 5000)) {  // a real outage, not the first connect after boot
+        cMqttFails += mqttStreakFails; diagSaveCounters();
+        diagEvent(mqttStreakFails ? "mqtt_fail" : "mqtt_drop", "fails=" + String(mqttStreakFails) + " last_state=" + String(mqttLastState) + " down=" + String((millis() - mqttDownSince) / 1000.0f, 1) + "s");
+      }
+      mqttUpOnce = true; mqttDownSince = 0; diagFull = true;
+    } else {
+      mqttLastState = mqtt.state(); mqttStreakFails++;  // PubSubClient state: -2 unreachable, -4 timeout, 5 not authorized...
+      if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
+      delay(2000);
+    }
   }
 }
 void setup() {
-  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack"; fileBase = String(PREFIX) + "/" DEVICE_ID "/file"; fileAckTopic = String(PREFIX) + "/" DEVICE_ID "/file_ack"; otaReqTopic = String(PREFIX) + "/" DEVICE_ID "/ota_req"; otaBase = String(PREFIX) + "/" DEVICE_ID "/ota/";
+  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack"; fileBase = String(PREFIX) + "/" DEVICE_ID "/file"; fileAckTopic = String(PREFIX) + "/" DEVICE_ID "/file_ack"; otaReqTopic = String(PREFIX) + "/" DEVICE_ID "/ota_req"; otaBase = String(PREFIX) + "/" DEVICE_ID "/ota/"; diagTopic = String(PREFIX) + "/" DEVICE_ID "/diag";
   prefs.begin("scale", true); lastCmdId = prefs.getUInt("cmdid", 0); prefs.end();
-  bootMs = millis(); loadWifi();
+  bootMs = millis(); diagBoot(); WiFi.onEvent(diagWifiEvent); loadWifi();
   loadConfig();
 #ifdef USB_MSC_UPLOAD
   usbDropBegin();
 #endif
-  beginWifi(); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(4096 + 160)  // 4 KB file chunks + topic/header;
+  beginWifi(); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(4096 + 160);  // 4 KB file chunks + topic/header
 }
 void loop() {
   if (WiFi.status() != WL_CONNECTED) connectWifi();
   if (!mqtt.connected()) connectMqtt();
   mqtt.loop();
+  diagLoop();
   if (otaPending) otaRun();
 #ifdef USB_MSC_UPLOAD
   usbDropPoll();

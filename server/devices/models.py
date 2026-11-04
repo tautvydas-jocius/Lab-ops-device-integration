@@ -46,6 +46,15 @@ class Device(models.Model):
     applied_config_version = models.PositiveIntegerField(null=True, blank=True)
     online = models.BooleanField(default=False)
     fw_version = models.CharField(max_length=40, blank=True, help_text="Reported by the MCU in its status message")
+    # latest diagnostics snapshot (from the MCU heartbeat on <prefix>/<id>/diag); history lives in DeviceHeartbeat / DeviceEvent
+    rssi = models.SmallIntegerField(null=True, blank=True, editable=False)
+    uptime_s = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    free_heap = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    min_free_heap = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    boot_no = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    last_reset = models.CharField(max_length=60, blank=True, editable=False)
+    diag_counters = models.JSONField(default=dict, blank=True, editable=False)
+    diag_at = models.DateTimeField(null=True, blank=True, editable=False)
     last_seen = models.DateTimeField(null=True, blank=True)
     command_token = models.CharField(max_length=64, default=new_token, editable=False, help_text="Shared secret; put in firmware secrets.h as COMMAND_TOKEN. Never sent over MQTT, only used to HMAC-sign commands.")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -82,7 +91,7 @@ class Reading(models.Model):
 
 
 class DeviceCommand(models.Model):
-    ACTIONS = [("ping", "Ping"), ("poll_now", "Poll now"), ("send_serial", "Send serial text"), ("reboot", "Reboot MCU"), ("set_wifi", "Set Wi-Fi credentials"), ("reset_config", "Reset device config"), ("factory_reset", "Factory reset (config + Wi-Fi)"), ("ota", "OTA firmware update")]
+    ACTIONS = [("ping", "Ping"), ("poll_now", "Poll now"), ("send_serial", "Send serial text"), ("reboot", "Reboot MCU"), ("set_wifi", "Set Wi-Fi credentials"), ("reset_config", "Reset device config"), ("factory_reset", "Factory reset (config + Wi-Fi)"), ("ota", "OTA firmware update"), ("diag", "Request full diagnostics")]
     STATUS = [("pending", "pending"), ("ok", "ok"), ("failed", "failed")]
     device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="commands")
     action = models.CharField(max_length=20, choices=ACTIONS)
@@ -138,3 +147,31 @@ class FirmwareImage(models.Model):
                 from django.utils import timezone
                 self.version = found.group(1).decode() if found else f"auto-{timezone.now():%Y%m%d}.{FirmwareImage.objects.count() + 1}"
         super().save(*args, **kwargs)
+
+
+class DeviceHeartbeat(models.Model):
+    """One row per MCU heartbeat (default every 30 s). Pruned after HEARTBEAT_KEEP_DAYS by the listener."""
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="heartbeats")
+    at = models.DateTimeField(auto_now_add=True, db_index=True)
+    rssi = models.SmallIntegerField(null=True)
+    uptime_s = models.PositiveIntegerField(null=True)
+    free_heap = models.PositiveIntegerField(null=True)
+    class Meta:
+        ordering = ["-at"]
+        indexes = [models.Index(fields=["device", "-at"], name="hb_dev_at_idx")]
+
+class DeviceEvent(models.Model):
+    """Persistent MCU event (boot reason, Wi-Fi drop, MQTT drop...). The MCU keeps the last 16 in NVS and replays them, so
+    (device, bid, n) de-duplicates: bid = random id of the boot the event happened in, n = event counter."""
+    KINDS = ["boot", "wifi_drop", "mqtt_drop", "mqtt_fail", "other"]
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="events")
+    n = models.PositiveIntegerField()
+    bid = models.CharField(max_length=16)
+    boot_no = models.PositiveIntegerField(default=0)
+    uptime_s = models.PositiveIntegerField(default=0)
+    kind = models.CharField(max_length=30)
+    detail = models.CharField(max_length=200, blank=True)
+    received_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering = ["-id"]
+        constraints = [models.UniqueConstraint(fields=["device", "bid", "n"], name="unique_device_event")]
