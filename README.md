@@ -99,7 +99,7 @@ Captured from a live run: the Django stack (broker, Postgres, web, `mqtt_listene
 export CONTROL_API_TOKEN=e2etoken123 && docker compose up -d --build web listener mosquitto db
 TOKEN=$(docker compose exec -T web python manage.py shell -c 'from devices.models import Device; print(Device.objects.get(device_id="bal-01").command_token)')
 uv run --with paho-mqtt python simulator/esp_emulator.py --id bal-01 --token "$TOKEN"   # pane 1
-python simulator/e2e.py "$CONTROL_API_TOKEN"                                             # pane 2 (32 checks, including fault injection: brownout, panic, power loss, Wi-Fi drop, MQTT failure, weak RSSI)
+python simulator/e2e.py "$CONTROL_API_TOKEN"                                             # pane 2 (28 checks, including fault injection: brownout, panic, power loss, Wi-Fi drop, MQTT failure, weak RSSI)
 ```
 
 ### Diagnostics (Django admin)
