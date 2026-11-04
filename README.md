@@ -69,6 +69,35 @@ With `USB_MSC_UPLOAD` defined, the ESP32-S3's native USB port (GPIO19/20) shows 
 
 Files are opaque bytes end to end: never decoded as text and never passed to a parser schema (a CSV may be UTF-16, a PDF is binary). The MCU publishes `{prefix}/{id}/file/{xfer}/meta` (JSON: name, size, chunks, sha256, HMAC `sig` keyed with the device command token) and then raw 4 KB binary chunks on `{prefix}/{id}/file/{xfer}/{seq}`. The `mqtt_listener` watcher reassembles (chunks may arrive in any order; incomplete transfers expire after 60 s), checks signature, size and SHA-256, validates the type (`.csv`/`.txt`/`.pdf`; PDFs must start `%PDF`; 8 MB cap), stores it in the `media-data` volume and answers on `{prefix}/{id}/file_ack`. Browse in admin (Uploaded files) or via the API with `CONTROL_API_TOKEN`: `GET /api/devices/{id}/files/list/`, `GET /api/files/{pk}/`. Needs `ARDUINO_USB_MODE=0` (already in `platformio.ini`); pick `board_build.arduino.memory_type` to match your PSRAM. Broker note: keep `message_size_limit` at the Mosquitto default (unlimited) or at least 5 KB.
 
+## Screenshots
+
+Captured from a live run: the Django stack (broker, Postgres, web, `mqtt_listener`) and `simulator/esp_emulator.py` side by side in two Rex panes, driven by `simulator/e2e.py`.
+
+**Server dashboard**: three balances, live weights and stability, parser schema and config version per device.
+
+![Server dashboard](docs/screenshots/server-dashboard.png)
+
+**Admin, device commands**: signed commands sent to the MCU and the acks it returned (ping, poll, set_wifi with rollback, resets). The Wi-Fi password is never stored, only `ssid=`.
+
+![Admin device commands](docs/screenshots/server-admin-commands.png)
+
+**Admin, uploaded files**: CSV and PDF dropped on the emulated USB drive, reassembled from binary MQTT chunks by the listener. A fake PDF and an `.exe` were rejected.
+
+![Admin uploaded files](docs/screenshots/server-admin-files.png)
+
+**Firmware side**: the emulator log for the same run: config applied, command acks, a Wi-Fi trial that fails and reverts, a trial that commits, resets, and files from the drop drive (the fake PDF is "rejected by server"). This is the Python protocol emulator, not the C++ firmware: the firmware is not compiled here, and the FAT12 parser has only been reviewed, not run.
+
+![Firmware emulator log](docs/screenshots/firmware-emulator-log.png)
+
+### Reproduce
+
+```sh
+export CONTROL_API_TOKEN=e2etoken123 && docker compose up -d --build web listener mosquitto db
+TOKEN=$(docker compose exec -T web python manage.py shell -c 'from devices.models import Device; print(Device.objects.get(device_id="bal-01").command_token)')
+uv run --with paho-mqtt python simulator/esp_emulator.py --id bal-01 --token "$TOKEN"   # pane 1
+python simulator/e2e.py "$CONTROL_API_TOKEN"                                             # pane 2 (12 checks)
+```
+
 ## Firmware
 
 Install PlatformIO, copy `firmware/include/secrets.example.h` to `firmware/include/secrets.h`, set WiFi/MQTT values and `DEVICE_ID`, then build and flash from `firmware/`:
