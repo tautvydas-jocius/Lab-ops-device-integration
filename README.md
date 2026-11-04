@@ -26,7 +26,7 @@ Host PC <-- USB-C (drop drive, flashing) --> ATOM S3 Lite --Wi-Fi--> MQTT broker
 
 Notes and cautions:
 - Power the level shifter from **3.3 V**, never 5 V, or its TTL output can overdrive G1 (the ESP32-S3 pins are not 5 V tolerant). Check your balance's DB9 pinout and whether it needs a null-modem swap; I did not wire a real balance.
-- No PSRAM: the drop drive is **192 KB** (`USB_DRIVE_KB_NO_PSRAM`) instead of 4 MB, enough for CSV/TXT/small Excel, not for large PDFs. Boards with PSRAM use the `esp32-s3-devkitc-1` env and get 4 MB.
+- No PSRAM: the drop drive is **192 KB** (`USB_DRIVE_KB_NO_PSRAM`) instead of 4 MB, enough for CSV/TXT/small Excel, not for large PDFs. Boards with PSRAM get the 4 MB drive: **M5Stack AtomS3R** (same Atom size and Grove port, 8 MB PSRAM; `pio run -e atoms3r`, octal PSRAM assumed, switch `memory_type` to `qio_qspi` if it boot-loops) or a generic devkit (`esp32-s3-devkitc-1` env).
 - `ARDUINO_USB_MODE=0` hands the USB port to the drop drive, so there is no USB serial monitor; logs go to UART0. To reflash, put the board in download mode per the M5Stack docs.
 - The Grove 5 V pin and the header pins G5-G8/G38/G39 are free for other add-ons; the front button is G41 and the LED G35 (unused by the firmware).
 - Wiring and pin choices here are my reading of the M5Stack docs, not tested on hardware.
@@ -168,10 +168,11 @@ UART1 defaults to RX GPIO18 / TX GPIO17 (devkit) and RX G1 / TX G2 on the ATOM S
 | Server logic | `docker compose run --rm web python manage.py test` | 15 tests pass |
 | End to end | `simulator/e2e.py` against the live stack and the firmware-protocol emulator (commands, signatures, Wi-Fi trial and rollback, resets, OTA by version, file drop, diagnostics fault injection) | passes |
 | Concurrency | `simulator/concurrency_test.py`: balance streaming at 20 lines/s while a 2 MB upload, a 1 MB OTA, pings and diagnostics share the MQTT link | naive firmware (Arduino-default 256 B UART buffer, blocking transfers) lost about 5 % of balance lines; the shipped design (2 KB buffer plus `pumpSerial()` inside every blocking section) lost 0. Django stored every published line |
-| Firmware compile | `pio run -e esp32-s3-devkitc-1` and `-e atoms3-lite` | both build (about 1.2 MB flash, 26 % RAM) |
+| Firmware compile | `pio run -e esp32-s3-devkitc-1`, `-e atoms3-lite`, `-e atoms3r` | all build (about 1.2 MB flash, 26 % RAM) |
+| Firmware in QEMU | `firmware/tools/qemu_smoke.sh` (Espressif QEMU, `esp32s3` machine) | ROM, bootloader and IDF startup run; then an assert in IDF `init_flash` (before `setup()`) stops it, with or without PSRAM, DIO or QIO. Arduino's prebuilt libs do not match QEMU's flash model, so our code was never reached. Not a firmware result either way |
 | OTA speed | `simulator/ota_bench.py` against the emulator over loopback | about 1.2 MB/s; real Wi-Fi will be much slower |
 
-**Not verified:** the firmware has never run on silicon or in an ESP32-S3 emulator. Espressif's QEMU does not emulate the S3's Wi-Fi (its own docs list Wi-Fi as unsupported), so the real firmware could only be booted there without network; Wokwi supports Wi-Fi but needs an account token. The concurrency test models the UART and loop timing in the emulator; it is evidence for the design, not a measurement of the C++ on hardware. The FAT12 USB-drive parser, USB enumeration, EAP join, brownout/panic reset reasons and real RSSI are unexercised. Plan: flash a real ATOM S3 Lite and rerun `e2e.py` against it.
+**Not verified:** the firmware has never run on silicon or in an ESP32-S3 emulator. Espressif's QEMU does not emulate the S3's Wi-Fi (its own docs list Wi-Fi as unsupported), and the real firmware does not even get past IDF startup there (see the table); Wokwi supports Wi-Fi but needs an account token. The concurrency test models the UART and loop timing in the emulator; it is evidence for the design, not a measurement of the C++ on hardware. The FAT12 USB-drive parser, USB enumeration, EAP join, brownout/panic reset reasons and real RSSI are unexercised. Plan: flash a real ATOM S3 Lite and rerun `e2e.py` against it.
 
 ## Limitations
 
