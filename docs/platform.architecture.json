@@ -1,0 +1,246 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Lab-ops device integration",
+    "subtitle": "ATOM S3 Lite gateway, MQTT, Django platform",
+    "output": "platform-architecture.html"
+  },
+  "components": [
+    {
+      "id": "balance",
+      "type": "external",
+      "label": "Lab balance",
+      "sublabel": "RS232 (MT-SICS/SBI)",
+      "pos": [
+        40,
+        110
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "pc",
+      "type": "external",
+      "label": "Host PC",
+      "sublabel": "drops CSV/PDF/Excel",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        140,
+        64
+      ]
+    },
+    {
+      "id": "mcu",
+      "type": "frontend",
+      "label": "ATOM S3 Lite",
+      "sublabel": "ESP32-S3 firmware",
+      "pos": [
+        270,
+        190
+      ],
+      "size": [
+        170,
+        90
+      ],
+      "tag": "8 MB, no PSRAM"
+    },
+    {
+      "id": "broker",
+      "type": "messagebus",
+      "label": "Mosquitto",
+      "sublabel": "MQTT :1883",
+      "pos": [
+        540,
+        205
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "listener",
+      "type": "backend",
+      "label": "mqtt_listener",
+      "sublabel": "parse, reassemble, OTA",
+      "pos": [
+        830,
+        110
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "web",
+      "type": "backend",
+      "label": "Django web",
+      "sublabel": "admin, dashboard, API",
+      "pos": [
+        830,
+        300
+      ],
+      "size": [
+        150,
+        64
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "readings, events",
+      "pos": [
+        1090,
+        110
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "media",
+      "type": "database",
+      "label": "Media volume",
+      "sublabel": "files, firmware",
+      "pos": [
+        1090,
+        300
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "ops",
+      "type": "external",
+      "label": "Operator / MES",
+      "sublabel": "browser, API token",
+      "pos": [
+        830,
+        470
+      ],
+      "size": [
+        150,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "docker compose",
+      "wraps": [
+        "broker",
+        "listener",
+        "web",
+        "db",
+        "media"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "balance",
+      "to": "mcu",
+      "label": "RS232 + level shifter",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "from": "pc",
+      "to": "mcu",
+      "label": "USB-C drop drive",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "from": "mcu",
+      "to": "broker",
+      "label": "Wi-Fi, WPA2/EAP",
+      "variant": "emphasis"
+    },
+    {
+      "from": "broker",
+      "to": "listener",
+      "label": "raw, status, diag, file, ota_req",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "from": "web",
+      "to": "broker",
+      "label": "cmd, config",
+      "variant": "security",
+      "fromSide": "left",
+      "toSide": "bottom"
+    },
+    {
+      "from": "listener",
+      "to": "db",
+      "label": "SQL"
+    },
+    {
+      "from": "web",
+      "to": "db",
+      "label": "SQL",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "from": "listener",
+      "to": "media",
+      "label": "files",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "from": "ops",
+      "to": "web",
+      "label": "HTTPS, bearer token",
+      "variant": "security",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Firmware loop (single thread)",
+      "items": [
+        "pumpSerial drains the UART, 2 KB RX buffer",
+        "Pumped inside uploads, OTA and CRC passes",
+        "Persistent diag counters + 16-event ring in NVS"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "MQTT topics",
+      "items": [
+        "raw, status, diag up; config, cmd, ack",
+        "file/{xfer}/meta|n + file_ack (binary 4 KB chunks)",
+        "ota_req -> ota/{image}/{n} (signed, SHA-256 checked)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Trust",
+      "items": [
+        "cmd and file meta HMAC-signed with a per-device token",
+        "API and admin actions need a bearer token or login"
+      ]
+    }
+  ]
+}

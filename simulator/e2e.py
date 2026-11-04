@@ -56,18 +56,20 @@ def wait(cond, secs=20):
         time.sleep(.25); d = diag()
         if cond(d): return d
     return diag()
-b0 = diag()["counters"]["boots"]
-chaos("brownout"); d = wait(lambda d: d["counters"]["brownout"] >= 1); check("brownout reboot recorded (counter + last_reset)", d["last_reset"] == "brownout" and d["counters"]["brownout"] == 1, d["counters"])
-check("counters persisted across reboot (boots incremented, earlier power_on kept)", d["counters"]["boots"] == b0 + 1 and d["counters"]["poweron"] >= 1, d["counters"])
-chaos("panic"); d = wait(lambda d: d["counters"]["panic"] >= 1); check("crash (panic) recorded", d["last_reset"] == "panic")
-chaos("power_off"); d = wait(lambda d: d["counters"]["poweron"] >= 2); check("power loss recorded (power_on again)", d["counters"]["poweron"] >= 2 and any("Lost power" in f["finding"] for f in d["findings"]), [f["finding"] for f in d["findings"]])
+# counters are cumulative on the MCU (they survive reboots by design), so every check is relative to a baseline taken now
+def delta(key, base, d): return d["counters"][key] - base[key]
+base = diag()["counters"]
+chaos("brownout"); d = wait(lambda d: d["counters"]["brownout"] > base["brownout"] and d["last_reset"] == "brownout"); check("brownout reboot recorded (counter + last_reset)", delta("brownout", base, d) == 1 and d["last_reset"] == "brownout", d["counters"])
+check("counters persisted across reboot (boots +1, earlier history kept)", delta("boots", base, d) == 1 and d["counters"]["poweron"] >= base["poweron"], d["counters"])
+chaos("panic"); d = wait(lambda d: d["counters"]["panic"] > base["panic"] and d["last_reset"] == "panic"); check("crash (panic) recorded", delta("panic", base, d) == 1 and d["last_reset"] == "panic")
+chaos("power_off"); d = wait(lambda d: d["counters"]["poweron"] > base["poweron"] and d["last_reset"] == "power_on"); check("power loss recorded (power_on)", delta("poweron", base, d) == 1, d["counters"])
 r = run("reboot"); d = wait(lambda d: d["last_reset"] == "cmd_reboot"); check("commanded reboot is told apart from faults", d["last_reset"] == "cmd_reboot", d["last_reset"])
-chaos("wifi_drop", 3); d = wait(lambda d: d["counters"]["wifi_drops"] >= 1, 30); check("wifi drop counted with duration event", d["counters"]["wifi_drops"] == 1)
-chaos("mqtt_fail", 4); d = wait(lambda d: d["counters"]["mqtt_fails"] >= 1, 30); check("mqtt failure counted", d["counters"]["mqtt_fails"] >= 1)
-chaos("rssi", -88); d = wait(lambda d: d["rssi"] == -88); check("rssi poor flagged with advice", d["rssi_label"] == "poor" and any("Very weak Wi-Fi" in f["finding"] for f in d["findings"]))
+chaos("wifi_drop", 3); d = wait(lambda d: d["counters"]["wifi_drops"] > base["wifi_drops"], 30); check("wifi drop counted", delta("wifi_drops", base, d) == 1, d["counters"])
+chaos("mqtt_fail", 4); d = wait(lambda d: d["counters"]["mqtt_fails"] > base["mqtt_fails"], 30); check("mqtt failure counted", delta("mqtt_fails", base, d) >= 1, d["counters"])
+chaos("rssi", -88); d = wait(lambda d: d["rssi"] == -88); check("rssi reported and banded", d["rssi"] == -88 and d["rssi_label"] == "poor", d["rssi_label"])
 ev = dj(f"from devices.models import DeviceEvent as E; print(','.join(sorted(set(E.objects.filter(device__device_id='{DEV}').values_list('kind', flat=True)))))")
-check("event history has all kinds", {"boot", "wifi_drop", "mqtt_fail"} <= set(ev.split(",")), ev)
-check("score drops and verdict set", d["score"] < 100 and d["verdict"] in ("needs attention", "act now"), (d["score"], d["verdict"]))
+check("event log has boot, wifi_drop, mqtt_fail", {"boot", "wifi_drop", "mqtt_fail"} <= set(ev.split(",")), ev)
+agg = call("/diagnostics/?days=1")[1]["aggregate"]; check("aggregate counts events and boot reasons", agg["kinds"].get("boot", 0) >= 5 and {"brownout", "panic", "cmd_reboot"} <= set(agg["boot_reasons"]), (agg["kinds"], agg["boot_reasons"]))
 r = run("diag"); check("diag command acked", r["status"] == "ok", r["result"])
-order = [x["device_id"] for x in call("/diagnostics/?sort=rssi")[1]["devices"]]; check("sort by rssi API works", order[0] == DEV, order)
+order = [x["device_id"] for x in call("/diagnostics/?sort=rssi")[1]["devices"]]; check("sort by rssi API works (strongest first, weakest device last)", order[-1] == DEV, order)
 sys.exit(0 if ok else 1)

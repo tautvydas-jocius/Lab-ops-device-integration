@@ -14,8 +14,14 @@
 #endif
 #include "secrets.h"
 
-#define UART_RX 18
-#define UART_TX 17
+#ifndef UART_RX_PIN
+#define UART_RX_PIN 18  // devkit default; ATOM S3 Lite env overrides (Grove G1)
+#endif
+#ifndef UART_TX_PIN
+#define UART_TX_PIN 17  // ATOM S3 Lite: Grove G2
+#endif
+#define UART_RX UART_RX_PIN
+#define UART_TX UART_TX_PIN
 #ifndef FW_VERSION
 #define FW_VERSION "1.0.0"  // bump (or -DFW_VERSION=\"x\") per build; Django shows it per device
 #endif
@@ -121,6 +127,7 @@ void diagBoot() {
   }
   lastResetKind = kind; diagSaveCounters();
   diagEvent("boot", kind + " prev_uptime=" + String(prevUp) + "s");
+  Serial.printf("[labops] fw=%s device=%s boot#%u reset=%s prev_uptime=%us counters: poweron=%u brownout=%u panic=%u wdt=%u sw=%u\n", FW_VERSION, DEVICE_ID, (unsigned)bootNo, kind.c_str(), (unsigned)prevUp, (unsigned)cPoweron, (unsigned)cBrownout, (unsigned)cPanic, (unsigned)cWdt, (unsigned)cSw);
 }
 void diagWifiEvent(WiFiEvent_t e, WiFiEventInfo_t info) {  // runs in the Wi-Fi task: record only, persist from loop()
   if (e == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) { if (wifiUpOnce && !wifiDownSince) { wifiDownSince = millis(); } wifiLastReason = info.wifi_sta_disconnected.reason; }
@@ -257,7 +264,7 @@ void beginWifi() {
   else WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
 }
 void connectWifi() {
-  if (WiFi.status() == WL_CONNECTED) return; beginWifi();
+  if (WiFi.status() == WL_CONNECTED) return; Serial.printf("[labops] wifi: joining '%s'%s\n", wifiSsid.c_str(), wifiUser.length() ? " (WPA2-Enterprise)" : ""); beginWifi();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();

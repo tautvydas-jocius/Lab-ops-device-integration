@@ -1,7 +1,7 @@
 {% extends "admin/base_site.html" %}
 {% block extrastyle %}{{ block.super }}<style>
 .diag td,.diag th{padding:6px 10px;vertical-align:top;text-align:left}.dot{display:inline-block;width:9px;height:9px;border-radius:50%}.on{background:#2e7d32}.off{background:#999}
-.filters a{margin-right:10px}.agg{display:flex;gap:28px;flex-wrap:wrap;margin:10px 0 18px}.agg table td,.agg table th{padding:3px 12px 3px 0;text-align:left}.num{text-align:right!important}</style>{% endblock %}
+.filters a{margin-right:10px}.agg{display:flex;gap:28px;flex-wrap:wrap;align-items:flex-start;margin:10px 0 18px}.agg table td,.agg table th{padding:3px 12px 3px 0;text-align:left}.num{text-align:right!important}</style>{% endblock %}
 {% block content %}
 <p>{{ n_online }} of {{ n_total }} shown device(s) online. Sort: <span class="filters"><a href="?sort=name&days={{ days }}">name</a><a href="?sort=rssi&dir=desc&days={{ days }}">RSSI</a><a href="?sort=location&days={{ days }}">location</a><a href="?sort=uptime&days={{ days }}">uptime</a></span>
  Show: <span class="filters"><a href="?sort={{ sort }}&online=1&days={{ days }}">online</a><a href="?sort={{ sort }}&online=0&days={{ days }}">offline</a>{% for l in locations %}<a href="?sort={{ sort }}&location={{ l|urlencode }}&days={{ days }}">{{ l }}</a>{% endfor %}<a href="?sort={{ sort }}&days={{ days }}">all</a></span></p>

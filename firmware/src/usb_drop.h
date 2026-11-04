@@ -10,6 +10,9 @@
 #include "USB.h"
 #include "USBMSC.h"
 
+#ifndef USB_DRIVE_KB_NO_PSRAM
+#define USB_DRIVE_KB_NO_PSRAM 192  // internal SRAM is ~320 KB free after Wi-Fi/MQTT; keep headroom
+#endif
 #define SECTOR 512
 #define DROP_IDLE_MS 2000
 #define MAX_FILE (4u * 1024 * 1024)
@@ -130,7 +133,7 @@ static void scanRoot() {
 }
 static void usbDropBegin() {
   size_t bytes = 4u * 1024 * 1024; disk = psramFound() ? (uint8_t *)ps_malloc(bytes) : nullptr;
-  if (!disk) { bytes = 256u * 1024; disk = (uint8_t *)malloc(bytes); }  // no PSRAM: tiny drive
+  if (!disk) { bytes = USB_DRIVE_KB_NO_PSRAM * 1024u; disk = (uint8_t *)malloc(bytes); }  // no PSRAM (ATOM S3 Lite): small internal-RAM drive
   if (!disk) return; totalSectors = bytes / SECTOR; formatDisk();
   msc.vendorID("LabOps"); msc.productID("Drop Drive"); msc.productRevision("1.0"); msc.onRead(onRead); msc.onWrite(onWrite);
   msc.mediaPresent(true); msc.begin(totalSectors, SECTOR); USB.begin();
