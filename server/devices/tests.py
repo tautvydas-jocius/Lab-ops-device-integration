@@ -113,5 +113,27 @@ class DeviceIntegrationTests(TestCase):
         res = run(d.command_token); self.assertEqual(res[0], "ok")
         with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp):
             f, err = store_upload(d, res[2], res[3]); self.assertIsNone(err); self.assertEqual(f.name, "my_data.csv")
-            self.assertIsNotNone(store_upload(d, "x.exe", b"x")[1]); self.assertIsNotNone(store_upload(d, "x.pdf", b"nope")[1])
-        self.assertEqual(d.files.count(), 1)
+            self.assertIsNotNone(store_upload(d, "x.exe", b"x")[1]); self.assertIsNone(store_upload(d, "t.xlsx", b"PK\x03\x04zz")[1]); self.assertIsNone(store_upload(d, "o.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1zz")[1]); self.assertIsNone(store_upload(d, "n.txt", b"hello")[1]); self.assertIsNotNone(store_upload(d, "fake.xlsx", b"text")[1]); self.assertIsNotNone(store_upload(d, "x.pdf", b"nope")[1])
+        self.assertEqual(d.files.count(), 4)
+
+    @patch("devices.mqtt.publish.single")
+    def test_ota_command_signs_image_hash(self, single):
+        import json, tempfile
+        from django.core.files.base import ContentFile
+        from .models import FirmwareImage
+        from .mqtt import send_command, sign
+        d = Device.objects.create(device_id="o1", name="O", parser=self.mt)
+        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp):
+            img = FirmwareImage(version="1.1.0"); img.file.save("fw.bin", ContentFile(b"\xe9" * 10000), save=False); img.save()
+            self.assertEqual((img.size, len(img.sha256)), (10000, 64))
+            cmd = send_command(d, "ota", "", "t"); cmd.refresh_from_db()
+            body = json.loads(single.call_args.args[1]); arg = json.loads(body["arg"])
+            self.assertEqual((arg["sha256"], arg["size"], cmd.arg), (img.sha256, 10000, f"image {img.pk} v1.1.0"))
+            self.assertEqual(body["sig"], sign(d.command_token, cmd.pk, "ota", body["arg"]))
+            from .mqtt import publish_ota_chunk
+            sent = []
+            class C:  # records publishes
+                def publish(self, t, data, qos=0): sent.append((t, len(data)))
+            publish_ota_chunk(C(), "o1", img.pk, 2); publish_ota_chunk(C(), "o1", img.pk, 3)
+            self.assertEqual(sent, [(f"lab/devices/o1/ota/{img.pk}/2", 1808), (f"lab/devices/o1/ota/{img.pk}/3", 0)])
+        self.assertEqual(send_command(d, "ota", "999", "t").status, "failed")

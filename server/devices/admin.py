@@ -1,13 +1,13 @@
 from django.contrib import admin
-from .models import Device, DeviceCommand, ParserSchema, UploadedFile, Reading
+from .models import Device, DeviceCommand, FirmwareImage, ParserSchema, UploadedFile, Reading
 from .mqtt import send_command
 @admin.register(Device)
 class DeviceAdmin(admin.ModelAdmin):
-    list_display = ("device_id", "name", "location", "parser", "enabled", "online", "last_seen", "config_version", "applied_config_version")
+    list_display = ("device_id", "name", "location", "parser", "enabled", "online", "fw_version", "last_seen", "config_version", "applied_config_version")
     list_filter = ("enabled", "online", "device_type")
     search_fields = ("device_id", "name", "location")
-    readonly_fields = ("command_token",)
-    actions = ["ping", "poll_now", "reboot"]
+    readonly_fields = ("command_token", "fw_version")
+    actions = ["ping", "poll_now", "reboot", "ota_newest"]
     def _send(self, request, qs, action):
         for d in qs: send_command(d, action, by=request.user.get_username())
         self.message_user(request, f"{action} sent to {qs.count()} device(s); see Device commands for the ack.")
@@ -15,6 +15,8 @@ class DeviceAdmin(admin.ModelAdmin):
     def ping(self, request, qs): self._send(request, qs, "ping")
     @admin.action(description="Poll instrument now")
     def poll_now(self, request, qs): self._send(request, qs, "poll_now")
+    @admin.action(description="OTA: flash newest firmware image")
+    def ota_newest(self, request, qs): self._send(request, qs, "ota")
     @admin.action(description="Reboot MCU")
     def reboot(self, request, qs): self._send(request, qs, "reboot")
 @admin.register(ParserSchema)
@@ -50,3 +52,9 @@ class UploadedFileAdmin(admin.ModelAdmin):
     list_filter = ("device",)
     readonly_fields = tuple(f.name for f in UploadedFile._meta.fields)
     def has_add_permission(self, request): return False
+
+@admin.register(FirmwareImage)
+class FirmwareImageAdmin(admin.ModelAdmin):
+    list_display = ("version", "size", "sha256", "uploaded_at", "notes")
+    readonly_fields = ("size", "sha256")
+    def get_readonly_fields(self, request, obj=None): return ("size", "sha256", "version", "file") if obj else ("size", "sha256")

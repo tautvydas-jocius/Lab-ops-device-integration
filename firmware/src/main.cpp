@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <mbedtls/md.h>
+#include <Update.h>
 #if __has_include(<esp_eap_client.h>)
 #include <esp_eap_client.h>  // Arduino-ESP32 3.x / IDF 5
 #define EAP_SET(id, user, pass) do { esp_eap_client_set_identity((const uint8_t *)id, strlen(id)); esp_eap_client_set_username((const uint8_t *)user, strlen(user)); esp_eap_client_set_password((const uint8_t *)pass, strlen(pass)); esp_wifi_sta_enterprise_enable(); } while (0)
@@ -15,14 +16,19 @@
 
 #define UART_RX 18
 #define UART_TX 17
-#define FW_VERSION "1.0.0"
+#ifndef FW_VERSION
+#define FW_VERSION "1.0.0"  // bump (or -DFW_VERSION=\"x\") per build; Django shows it per device
+#endif
 static const char *PREFIX = "lab/devices";
 WiFiClient network;
 PubSubClient mqtt(network);
 Preferences prefs;
 String rawTopic, configTopic, statusTopic, cmdTopic, ackTopic;
 uint32_t lastCmdId = 0;
-String fileBase, fileAckTopic;
+String fileBase, fileAckTopic, otaReqTopic, otaBase;
+// OTA: onCommand only records the request; otaRun() executes from loop() because it needs mqtt.loop() (not re-entrant in a callback)
+bool otaPending = false; uint32_t otaCmdId = 0, otaImage = 0, otaSize = 0; String otaVersion, otaSha;
+uint8_t otaBuf[4096]; volatile int otaLen = -1; volatile uint32_t otaIdx = 0;
 volatile uint32_t ackXfer = 0; volatile int ackState = 0;  // set by file_ack handler
 String wifiSsid = WIFI_SSID, wifiPass = WIFI_PASS, wifiUser, wifiIdent;  // user set => WPA2-Enterprise (PEAP/MSCHAPv2)  // NVS namespace "wifi" overrides secrets.h defaults
 bool wifiTrial = false;  // booted on pending creds; revert unless MQTT connects in time
@@ -87,6 +93,13 @@ void onCommand(byte *payload, unsigned int length) {
   if (action == "ping") ack(id, true, String("pong fw=" FW_VERSION " up=") + millis() / 1000 + "s rssi=" + WiFi.RSSI());
   else if (action == "poll_now") { if (pollCommand.length()) { Serial1.print(pollCommand); ack(id, true, "polled"); } else ack(id, false, "no poll_command configured"); }
   else if (action == "send_serial") { Serial1.print(arg); ack(id, true, "sent " + String(arg.length()) + " bytes"); }
+  else if (action == "ota") {
+    JsonDocument o; if (deserializeJson(o, arg)) { ack(id, false, "bad ota arg"); return; }
+    if (otaPending) { ack(id, false, "ota already running"); return; }
+    otaImage = o["image"] | 0; otaSize = o["size"] | 0; otaVersion = String((const char *)(o["version"] | "")); otaSha = String((const char *)(o["sha256"] | ""));
+    if (!otaImage || !otaSize || otaSha.length() != 64) { ack(id, false, "ota arg needs image, size, sha256"); return; }
+    otaCmdId = id; otaPending = true;  // signed arg => size + sha256 are authenticated; image bytes are verified against them
+  }
   else if (action == "set_wifi") {
     JsonDocument w; String ns, np;
     if (deserializeJson(w, arg) || !(ns = String((const char *)(w["ssid"] | ""))).length() || ns.length() > 32) { ack(id, false, "arg must be {\"ssid\":..,\"pass\":..[,\"eap_user\":..,\"eap_identity\":..]}"); return; }
@@ -106,8 +119,33 @@ void onCommand(byte *payload, unsigned int length) {
 #ifdef USB_MSC_UPLOAD
 #include "usb_drop.h"  // needs mqtt, hmacHex, fileBase, ackXfer defined above
 #endif
+// Pulls the signed image 4 KB at a time over MQTT (stop-and-wait: request index n, wait for ota/<image>/<n>), streams it to the
+// inactive OTA partition while hashing, and only switches boot partition if the SHA-256 matches the signed command.
+void otaRun() {
+  otaPending = false; uint32_t chunks = (otaSize + 4095) / 4096; mbedtls_md_context_t ctx; mbedtls_md_init(&ctx);
+  auto fail = [&](const String &why) { Update.abort(); mbedtls_md_free(&ctx); ack(otaCmdId, false, why); };
+  if (!Update.begin(otaSize)) { ack(otaCmdId, false, String("no room / bad size: ") + Update.errorString()); mbedtls_md_free(&ctx); return; }
+  mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0); mbedtls_md_starts(&ctx);
+  for (uint32_t i = 0; i < chunks; i++) {
+    bool got = false;
+    for (int attempt = 0; attempt < 4 && !got; attempt++) {
+      otaLen = -1; JsonDocument r; r["image"] = otaImage; r["index"] = i; String req; serializeJson(r, req); mqtt.publish(otaReqTopic.c_str(), req.c_str());
+      for (uint32_t t = millis(); millis() - t < 4000 && !got;) { mqtt.loop(); if (otaLen >= 0 && otaIdx == i) got = true; else delay(2); }
+    }
+    if (!got) return fail("ota timeout at chunk " + String(i));
+    uint32_t want = min((uint32_t)4096, otaSize - i * 4096);
+    if ((uint32_t)otaLen != want) return fail("ota chunk " + String(i) + " has wrong length");
+    mbedtls_md_update(&ctx, otaBuf, want);
+    if (Update.write(otaBuf, want) != want) return fail(String("flash write failed: ") + Update.errorString());
+  }
+  uint8_t h[32]; mbedtls_md_finish(&ctx, h); mbedtls_md_free(&ctx); String hex; char b[3]; for (int i = 0; i < 32; i++) { snprintf(b, 3, "%02x", h[i]); hex += b; }
+  if (hex != otaSha) { Update.abort(); ack(otaCmdId, false, "sha256 mismatch, image discarded"); return; }
+  if (!Update.end(true)) { ack(otaCmdId, false, String("finalize failed: ") + Update.errorString()); return; }
+  ack(otaCmdId, true, "flashed v" + otaVersion + ", rebooting"); mqtt.loop(); delay(300); ESP.restart();
+}
 void onMessage(char *topic, byte *payload, unsigned int length) {
   String t(topic);
+  if (t.startsWith(otaBase)) { otaIdx = t.substring(t.lastIndexOf('/') + 1).toInt(); otaLen = length <= sizeof(otaBuf) ? (int)length : -2; if (otaLen > 0) memcpy(otaBuf, payload, length); return; }
   if (t == fileAckTopic) { JsonDocument a; if (!deserializeJson(a, payload, length)) { ackState = (a["ok"] | false) ? 1 : 2; ackXfer = a["xfer"] | 0; } return; }
   if (t == cmdTopic) { onCommand(payload, length); return; } if (t != configTopic) return;
   JsonDocument doc; if (deserializeJson(doc, payload, length)) return;
@@ -148,13 +186,13 @@ void connectWifi() {
 void connectMqtt() {
   while (!mqtt.connected()) {
     String will = "{\"state\":\"offline\",\"config_version\":" + String(configVersion) + ",\"fw\":\"" FW_VERSION "\"}";
-    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); mqtt.subscribe(fileAckTopic.c_str()); if (wifiTrial) commitWifi(); publishStatus("online"); }
+    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); mqtt.subscribe(fileAckTopic.c_str()); mqtt.subscribe((otaBase + "/#").c_str()); if (wifiTrial) commitWifi(); publishStatus("online"); }
     else if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
     else delay(2000);
   }
 }
 void setup() {
-  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack"; fileBase = String(PREFIX) + "/" DEVICE_ID "/file"; fileAckTopic = String(PREFIX) + "/" DEVICE_ID "/file_ack";
+  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack"; fileBase = String(PREFIX) + "/" DEVICE_ID "/file"; fileAckTopic = String(PREFIX) + "/" DEVICE_ID "/file_ack"; otaReqTopic = String(PREFIX) + "/" DEVICE_ID "/ota_req"; otaBase = String(PREFIX) + "/" DEVICE_ID "/ota/";
   prefs.begin("scale", true); lastCmdId = prefs.getUInt("cmdid", 0); prefs.end();
   bootMs = millis(); loadWifi();
   loadConfig();
@@ -167,6 +205,7 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED) connectWifi();
   if (!mqtt.connected()) connectMqtt();
   mqtt.loop();
+  if (otaPending) otaRun();
 #ifdef USB_MSC_UPLOAD
   usbDropPoll();
 #endif

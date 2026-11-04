@@ -1,6 +1,6 @@
 #pragma once
 // USB "drop drive": the ESP32-S3 enumerates as a small FAT12 flash drive backed by RAM. When the host has been
-// quiet for DROP_IDLE_MS, the root directory is scanned and every new/changed .csv/.pdf/.txt is sent to Django as
+// quiet for DROP_IDLE_MS, the root directory is scanned and every new/changed .csv/.pdf/.txt/.xlsx/.xls is sent to Django as
 // binary MQTT chunks (signed with COMMAND_TOKEN). Nothing is persisted: the drive is empty after a reboot. The host is never modified.
 #include <Arduino.h>
 #include <PubSubClient.h>
@@ -64,7 +64,7 @@ static uint8_t *readChain(uint16_t first, uint32_t size) {
   return out;
 }
 static bool allowedName(const String &n) {
-  String l = n; l.toLowerCase(); return l.endsWith(".csv") || l.endsWith(".pdf") || l.endsWith(".txt");
+  String l = n; l.toLowerCase(); return l.endsWith(".csv") || l.endsWith(".pdf") || l.endsWith(".txt") || l.endsWith(".xlsx") || l.endsWith(".xls");
 }
 static bool alreadySent(const String &n, uint32_t size, uint32_t crc) {
   for (int i = 0; i < nSent; i++) if (n == sent[i].name) return sent[i].size == size && sent[i].crc == crc; return false;

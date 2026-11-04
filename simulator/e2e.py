@@ -25,9 +25,19 @@ time.sleep(10); r = run("ping"); check("MCU rolled back to old Wi-Fi and answers
 r = run("set_wifi", json.dumps({"ssid": "lab", "pass": "labpass"})); time.sleep(4); r = run("ping"); check("set_wifi to reachable net commits", r["status"] == "ok", r["result"])
 r = run("reset_config"); time.sleep(4); r = run("ping"); check("reset_config then MCU back online", r["status"] == "ok", r["result"])
 r = run("factory_reset"); time.sleep(4); r = run("ping"); check("factory_reset then MCU back online", r["status"] == "ok", r["result"])
+# OTA: upload an image through Django (as the admin would), flash it, and tamper-check
+import subprocess, os
+def dj(code): return (subprocess.run(["docker", "compose", "exec", "-T", "web", "python", "manage.py", "shell", "-c", code], capture_output=True, text=True, cwd=os.path.join(os.path.dirname(__file__), "..")).stdout.strip().splitlines()[-1:] or [""])[0]
+img = dj("from django.core.files.base import ContentFile as C; from devices.models import FirmwareImage as F; import os; F.objects.filter(version='9.9.9').delete(); i=F(version='9.9.9'); i.file.save('fw.bin', C(os.urandom(70000)), save=False); i.save(); print(i.pk)")
+r = run("ota", img, wait=30); check("ota flashed (17 chunks, sha256 verified)", r["status"] == "ok", r["result"])
+time.sleep(3); r = run("ping"); check("MCU back after ota reboot", r["status"] == "ok")
+check("django shows new fw_version", dj("from devices.models import Device; print(Device.objects.get(device_id='bal-01').fw_version)") == "9.9.9")
+dj(f"from devices.models import FirmwareImage as F; F.objects.filter(pk={img}).update(sha256='0'*64)")  # corrupt hash => MCU must refuse
+r = run("ota", img, wait=30); check("ota with wrong sha256 refused", r["status"] == "failed", r["result"])
 time.sleep(1)
 files = call(f"/devices/{DEV}/files/list/")[1]["files"]; names = {f["name"] for f in files}
 check("csv (UTF-16, NULs) stored", "readings_utf16.csv" in names)
 check("pdf stored", "report.pdf" in names)
-check("fake pdf and .exe not stored", not ({"evil.pdf", "ignore.exe"} & names), sorted(names))
+check("excel stored", {"book.xlsx", "old.xls"} <= names, sorted(names))
+check("fake xlsx, fake pdf and .exe not stored", not ({"evil.pdf", "ignore.exe", "fake.xlsx"} & names), sorted(names))
 sys.exit(0 if ok else 1)

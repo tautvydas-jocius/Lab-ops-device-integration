@@ -51,7 +51,7 @@
     setText('kpi-total-devices', s.total_devices ?? '--');
     setText('kpi-online-devices', `${s.online_devices ?? 0} / ${s.total_devices ?? 0}`);
     setText('kpi-total-readings', (s.total_readings ?? 0).toLocaleString());
-    setText('kpi-stable-pct', `${s.stable_percentage ?? 0}%`);
+    setText('kpi-stable-pct', `${s.parse_ok_percentage ?? 0}%`);
     setText('kpi-schemas-count', s.schemas_count ?? '--');
     
     // Header status

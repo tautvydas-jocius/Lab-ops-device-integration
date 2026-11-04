@@ -50,9 +50,12 @@ services:
     build: ./server
     command: python manage.py mqtt_listener
     environment: *django-env
+    volumes:
+      - media-data:/data/media  # shared with web: listener stores uploads, serves OTA images
     depends_on:
       db: {condition: service_healthy}
       mosquitto: {condition: service_healthy}
+      web: {condition: service_started}
   simulator:
     build: ./server
     working_dir: /app

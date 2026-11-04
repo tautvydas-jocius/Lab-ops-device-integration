@@ -5,7 +5,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 from devices.models import Device, DeviceCommand, ParserSchema, Reading
 from devices.parsing import parse
-from devices.mqtt import publish_config
+from devices.mqtt import publish_config, publish_ota_chunk
 from devices.files import store_upload
 from devices.transfer import Reassembler
 log = logging.getLogger(__name__)
@@ -14,7 +14,7 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         def on_connect(client, userdata, flags, reason_code, properties):
-            client.subscribe([(f"{settings.MQTT_PREFIX}/+/raw", 0), (f"{settings.MQTT_PREFIX}/+/status", 0), (f"{settings.MQTT_PREFIX}/+/ack", 1), (f"{settings.MQTT_PREFIX}/+/file/#", 0)])
+            client.subscribe([(f"{settings.MQTT_PREFIX}/+/raw", 0), (f"{settings.MQTT_PREFIX}/+/status", 0), (f"{settings.MQTT_PREFIX}/+/ack", 1), (f"{settings.MQTT_PREFIX}/+/file/#", 0), (f"{settings.MQTT_PREFIX}/+/ota_req", 0)])
             for d in Device.objects.all():
                 try: publish_config(d)
                 except Exception as e: log.warning("republish failed %s: %s", d.device_id, e)
@@ -33,12 +33,16 @@ class Command(BaseCommand):
         def on_message(client, userdata, msg):
             fm = re.match(rf"^{re.escape(settings.MQTT_PREFIX)}/([^/]+)/file/(\d+)/(meta|\d+)$", msg.topic)
             if fm: on_file(client, fm.group(1), fm.group(2), fm.group(3), msg.payload); return
-            match = re.match(rf"^{re.escape(settings.MQTT_PREFIX)}/([^/]+)/(raw|status|ack)$", msg.topic)
+            match = re.match(rf"^{re.escape(settings.MQTT_PREFIX)}/([^/]+)/(raw|status|ack|ota_req)$", msg.topic)
             if not match: return
             ident, kind = match.groups()
             try: payload = json.loads(msg.payload.decode())
             except Exception: log.warning("bad JSON on %s", msg.topic); return
             device = Device.objects.select_related("parser").filter(device_id=ident).first()
+            if kind == "ota_req":
+                try: publish_ota_chunk(client, ident, int(payload["image"]), int(payload["index"]))
+                except (KeyError, ValueError, TypeError): log.warning("bad ota_req from %s", ident)
+                return
             if kind == "ack":
                 ok = bool(payload.get("ok"))
                 DeviceCommand.objects.filter(pk=payload.get("id"), device__device_id=ident, status="pending").update(status="ok" if ok else "failed", result=str(payload.get("result", ""))[:1000], acked_at=timezone.now())
@@ -49,7 +53,7 @@ class Command(BaseCommand):
                     if not parser: return
                     device = Device.objects.create(device_id=ident, name=f"Pending {ident}", parser=parser, enabled=False)
                 state = payload.get("state") == "online"
-                Device.objects.filter(pk=device.pk).update(online=state, last_seen=timezone.now() if state else device.last_seen, applied_config_version=payload.get("config_version"))
+                Device.objects.filter(pk=device.pk).update(online=state, last_seen=timezone.now() if state else device.last_seen, applied_config_version=payload.get("config_version"), fw_version=str(payload.get("fw", ""))[:40] or device.fw_version)
                 return
             if not device:
                 parser = ParserSchema.objects.first()

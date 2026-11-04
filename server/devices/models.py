@@ -45,6 +45,7 @@ class Device(models.Model):
     config_version = models.PositiveIntegerField(default=1)
     applied_config_version = models.PositiveIntegerField(null=True, blank=True)
     online = models.BooleanField(default=False)
+    fw_version = models.CharField(max_length=40, blank=True, help_text="Reported by the MCU in its status message")
     last_seen = models.DateTimeField(null=True, blank=True)
     command_token = models.CharField(max_length=64, default=new_token, editable=False, help_text="Shared secret; put in firmware secrets.h as COMMAND_TOKEN. Never sent over MQTT, only used to HMAC-sign commands.")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -81,11 +82,11 @@ class Reading(models.Model):
 
 
 class DeviceCommand(models.Model):
-    ACTIONS = [("ping", "Ping"), ("poll_now", "Poll now"), ("send_serial", "Send serial text"), ("reboot", "Reboot MCU"), ("set_wifi", "Set Wi-Fi credentials"), ("reset_config", "Reset device config"), ("factory_reset", "Factory reset (config + Wi-Fi)")]
+    ACTIONS = [("ping", "Ping"), ("poll_now", "Poll now"), ("send_serial", "Send serial text"), ("reboot", "Reboot MCU"), ("set_wifi", "Set Wi-Fi credentials"), ("reset_config", "Reset device config"), ("factory_reset", "Factory reset (config + Wi-Fi)"), ("ota", "OTA firmware update")]
     STATUS = [("pending", "pending"), ("ok", "ok"), ("failed", "failed")]
     device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="commands")
     action = models.CharField(max_length=20, choices=ACTIONS)
-    arg = models.CharField(max_length=200, blank=True, help_text="send_serial: text written to the instrument (terminator is NOT added). set_wifi: JSON {\"ssid\":\"..\",\"pass\":\"..\"}; password is not stored here")
+    arg = models.CharField(max_length=200, blank=True, help_text="send_serial: text written to the instrument (terminator is NOT added). ota: firmware image id (blank = newest); set_wifi: JSON {\"ssid\":\"..\",\"pass\":\"..\"}; password is not stored here")
     status = models.CharField(max_length=10, choices=STATUS, default="pending")
     result = models.TextField(blank=True)
     created_by = models.CharField(max_length=150, blank=True)
@@ -104,3 +105,21 @@ class UploadedFile(models.Model):
     received_at = models.DateTimeField(auto_now_add=True)
     class Meta: ordering = ["-id"]
     def __str__(self): return f"{self.device.device_id}/{self.name}"
+
+
+class FirmwareImage(models.Model):
+    version = models.CharField(max_length=40, unique=True)
+    file = models.FileField(upload_to="firmware/", help_text="PlatformIO build output: .pio/build/<env>/firmware.bin")
+    size = models.PositiveIntegerField(editable=False, default=0)
+    sha256 = models.CharField(max_length=64, editable=False, blank=True)
+    notes = models.TextField(blank=True)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    class Meta: ordering = ["-id"]
+    def __str__(self): return f"firmware {self.version}"
+    def save(self, *args, **kwargs):
+        if not self.sha256:  # computed once; images are immutable once stored
+            import hashlib
+            h = hashlib.sha256(); self.file.open("rb")
+            for chunk in self.file.chunks(): h.update(chunk)
+            self.file.seek(0); self.sha256, self.size = h.hexdigest(), self.file.size
+        super().save(*args, **kwargs)

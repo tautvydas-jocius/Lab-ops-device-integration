@@ -138,7 +138,7 @@ def api_overview(request):
     total_devices = len(devices_list)
     online_devices = sum(1 for d in devices_list if d["online"])
     total_readings = Reading.objects.count()
-    stable_readings = Reading.objects.filter(stable=True).count()
+    parsed_ok = Reading.objects.filter(ok=True).count()
     schemas_qs = ParserSchema.objects.all()
     schemas_list = [
         {
@@ -158,8 +158,8 @@ def api_overview(request):
             "total_devices": total_devices,
             "online_devices": online_devices,
             "total_readings": total_readings,
-            "stable_readings": stable_readings,
-            "stable_percentage": round((stable_readings / total_readings * 100), 1) if total_readings > 0 else 0,
+            "parsed_ok": parsed_ok,
+            "parse_ok_percentage": round((parsed_ok / total_readings * 100), 1) if total_readings > 0 else 0,
             "schemas_count": len(schemas_list),
             "mqtt_host": getattr(settings, "MQTT_HOST", "mosquitto"),
             "mqtt_port": getattr(settings, "MQTT_PORT", 1883),
