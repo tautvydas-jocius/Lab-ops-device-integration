@@ -276,7 +276,7 @@ void connectMqtt() {
   while (!mqtt.connected()) {
     String will = "{\"state\":\"offline\",\"config_version\":" + String(configVersion) + ",\"fw\":\"" FW_VERSION "\"}";
     if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) {
-      mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); mqtt.subscribe(fileAckTopic.c_str()); mqtt.subscribe((otaBase + "/#").c_str());
+      mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); mqtt.subscribe(fileAckTopic.c_str()); mqtt.subscribe((otaBase + "#").c_str());
       if (wifiTrial) commitWifi();
       publishStatus("online");
       if (mqttUpOnce && (mqttStreakFails || millis() - mqttDownSince > 5000)) {  // a real outage, not the first connect after boot

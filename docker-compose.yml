@@ -67,6 +67,21 @@ services:
     depends_on:
       mosquitto: {condition: service_healthy}
     profiles: ["sim"]
+  sil:  # real firmware sources on Linux: see firmware/test/sil and simulator/sil_test.py. Stop any Python emulator first (same device id).
+    build:
+      context: ./firmware
+      dockerfile: test/sil/Dockerfile
+    environment:
+      SIL_MQTT_HOST: mosquitto
+      SIL_STATE: /state
+      SIL_WIPE: ${SIL_WIPE:-1}
+      SIL_PSRAM: ${SIL_PSRAM:-1}
+      SIL_BIN: ${SIL_BIN:-1.0.0}
+      SIL_WIFI: "lab:labpass,lab2:lab2pass,corp:alice@corp:s3cret"
+      COMMAND_TOKEN: ${COMMAND_TOKEN:-}
+    depends_on:
+      mosquitto: {condition: service_healthy}
+    profiles: ["sil"]
 volumes:
   media-data:
   postgres-data:

@@ -58,12 +58,20 @@ Captured from a live run: the Django stack (broker, Postgres, web, `mqtt_listene
 
 ### Reproduce
 
+Real firmware on Linux (stop any Python emulator first, it uses the same device id):
+
+```sh
+export CONTROL_API_TOKEN=e2etoken123 && docker compose up -d --build web listener mosquitto db
+python3 simulator/sil_test.py
+```
+
+Python protocol emulator, as used for the screenshots:
+
 ```sh
 export CONTROL_API_TOKEN=e2etoken123 && docker compose up -d --build web listener mosquitto db
 TOKEN=$(docker compose exec -T web python manage.py shell -c 'from devices.models import Device; print(Device.objects.get(device_id="bal-01").command_token)')
 uv run --with paho-mqtt python simulator/esp_emulator.py --id bal-01 --token "$TOKEN"   # pane 1
 python simulator/e2e.py "$CONTROL_API_TOKEN"                                             # pane 2
-python simulator/concurrency_test.py "$CONTROL_API_TOKEN"                                # UART/MQTT interference
 ```
 
 ## Quickstart
@@ -166,13 +174,16 @@ UART1 defaults to RX GPIO18 / TX GPIO17 (devkit) and RX G1 / TX G2 on the ATOM S
 | What | How | Result |
 |---|---|---|
 | Server logic | `docker compose run --rm web python manage.py test` | 15 tests pass |
-| End to end | `simulator/e2e.py` against the live stack and the firmware-protocol emulator (commands, signatures, Wi-Fi trial and rollback, resets, OTA by version, file drop, diagnostics fault injection) | passes |
-| Concurrency | `simulator/concurrency_test.py`: balance streaming at 20 lines/s while a 2 MB upload, a 1 MB OTA, pings and diagnostics share the MQTT link | naive firmware (Arduino-default 256 B UART buffer, blocking transfers) lost about 5 % of balance lines; the shipped design (2 KB buffer plus `pumpSerial()` inside every blocking section) lost 0. Django stored every published line |
+| **Real firmware, software in the loop** | `CONTROL_API_TOKEN=... python3 simulator/sil_test.py` (about 5 min). The real `main.cpp` and `usb_drop.h`, with the real PubSubClient and ArduinoJson, built for Linux in the `sil` container against the real broker, listener and Django. Only the hardware is modelled (`firmware/test/sil/shim`). The USB host is `mtools` and `fsck.vfat`; OTA flashes a second real build through Django and re-executes it | 62 checks pass: config, HMAC and replay, Wi-Fi trial and rollback, EAP parameters, resets, FAT12 (8.3, long names, lowercase, fragmentation, 3 MB, 192 KB drive), OTA, reset-reason classification, outage logging, NVS usage rules |
+| Protocol emulator | `simulator/e2e.py` against `simulator/esp_emulator.py`, a separate Python re-implementation of the protocol | 33 checks pass. It shares no code with the firmware, so it cannot find firmware bugs (it missed the OTA bug below) |
+| Serial vs MQTT interference | `sil_test.py` sections `conc` and `nofix`: real C++, balance at 20 lines/s while a 2 MB upload and commands share the loop and MQTT link | With the fix: 235 of 235 lines stored, sequence contiguous, 0 lost. Negative control with `pumpSerial()` and the 2 KB buffer removed: 21 of 231 lines lost, so the test can fail. Not covered: lines during an OTA transfer. Linux timing, not ESP32 timing |
 | Firmware compile | `pio run -e esp32-s3-devkitc-1`, `-e atoms3-lite`, `-e atoms3r` | all build (about 1.2 MB flash, 26 % RAM) |
 | Firmware in QEMU | `firmware/tools/qemu_smoke.sh` (Espressif QEMU, `esp32s3` machine) | ROM, bootloader and IDF startup run; then an assert in IDF `init_flash` (before `setup()`) stops it, with or without PSRAM, DIO or QIO. Arduino's prebuilt libs do not match QEMU's flash model, so our code was never reached. Not a firmware result either way |
 | OTA speed | `simulator/ota_bench.py` against the emulator over loopback | about 1.2 MB/s; real Wi-Fi will be much slower |
 
-**Not verified:** the firmware has never run on silicon or in an ESP32-S3 emulator. Espressif's QEMU does not emulate the S3's Wi-Fi (its own docs list Wi-Fi as unsupported), and the real firmware does not even get past IDF startup there (see the table); Wokwi supports Wi-Fi but needs an account token. The concurrency test models the UART and loop timing in the emulator; it is evidence for the design, not a measurement of the C++ on hardware. The FAT12 USB-drive parser, USB enumeration, EAP join, brownout/panic reset reasons and real RSSI are unexercised. Plan: flash a real ATOM S3 Lite and rerun `e2e.py` against it.
+**Bugs the software-in-the-loop test found that the emulator could not:** OTA never worked (the firmware subscribed to `ota//#`, a double slash, so no chunk ever arrived); lowercase 8.3 file names arrived uppercased (VFAT case flags ignored); the drive had no volume label entry (`fsck.vfat` complained). All fixed.
+
+**Not verified:** the firmware has never run on an ESP32-S3. The shim models the radio, flash and USB, so these remain untested: real Wi-Fi and EAP authentication, USB enumeration on a real PC, real flash writes and the boot-partition switch, real `esp_reset_reason()` values, real RSSI and memory use, and timing under load. Espressif's QEMU does not emulate the S3's Wi-Fi and the Arduino build stops in IDF startup there (see the table). Next step: flash an AtomS3R and run `e2e.py`-style checks against it.
 
 ## Limitations
 

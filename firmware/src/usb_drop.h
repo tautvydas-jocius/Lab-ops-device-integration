@@ -47,6 +47,7 @@ static void formatDisk() {  // FAT12, 2 FATs, 512 root entries; cluster size pic
   b[36] = 0x80; b[38] = 0x29; put32(b + 39, 0x4C414253); memcpy(b + 43, "LABOPS DROP", 11); memcpy(b + 54, "FAT12   ", 8);
   b[510] = 0x55; b[511] = 0xAA;
   for (int f = 0; f < 2; f++) { uint8_t *t = disk + (1 + f * fatSectors) * SECTOR; t[0] = 0xF8; t[1] = 0xFF; t[2] = 0xFF; }
+  uint8_t *root = disk + (1 + 2 * fatSectors) * SECTOR; memcpy(root, "LABOPS DROP", 11); root[11] = 0x08;  // volume label entry, must match the boot sector (hosts and fsck read this one)
 }
 static int32_t onRead(uint32_t lba, uint32_t off, void *buf, uint32_t n) {
   if (lba >= totalSectors) return -1; memcpy(buf, disk + lba * SECTOR + off, n); return n;
@@ -116,7 +117,11 @@ static void scanRoot() {
     if (e[11] & 0x18) { haveLfn = false; continue; }  // volume label or directory
     String name;
     if (haveLfn && lfn[0]) name = lfn;
-    else { for (int k = 0; k < 8 && e[k] != ' '; k++) name += (char)e[k]; String ext; for (int k = 8; k < 11 && e[k] != ' '; k++) ext += (char)e[k]; if (ext.length()) name += "." + ext; }
+    else {  // 8.3 entry; byte 12 bits 0x08/0x10 = "base/extension is really lowercase" (Windows NT, mtools, Linux vfat), no LFN is written for those
+      for (int k = 0; k < 8 && e[k] != ' '; k++) name += (char)((e[12] & 0x08) ? tolower(e[k]) : e[k]);
+      String ext; for (int k = 8; k < 11 && e[k] != ' '; k++) ext += (char)((e[12] & 0x10) ? tolower(e[k]) : e[k]);
+      if (ext.length()) name += "." + ext;
+    }
     haveLfn = false; memset(lfn, 0, sizeof(lfn));
     uint32_t size = e[28] | (e[29] << 8) | (e[30] << 16) | ((uint32_t)e[31] << 24); uint16_t first = e[26] | (e[27] << 8);
     if (!allowedName(name) || !size) continue;
