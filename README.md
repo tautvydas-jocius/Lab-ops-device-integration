@@ -8,28 +8,7 @@ Editable diagram: [platform-architecture.html](docs/platform-architecture.html) 
 
 ## Contents
 
-[Hardware example](#hardware-example-m5stack-atom-s3-lite) | [Screenshots](#screenshots) | [Quickstart](#quickstart) | [MQTT topics](#mqtt-topics) | [Parser schemas](#parser-schemas-and-traceability) | [Remote actions](#remote-actions-admin---mcu) | [Diagnostics](#diagnostics-django-admin) | [OTA](#ota-firmware-updates-from-the-django-admin) | [Firmware](#firmware) | [Testing](#testing-and-what-is-not-verified) | [Limitations](#limitations)
-
-## Hardware example: M5Stack ATOM S3 Lite
-
-| | |
-|---|---|
-| Board | [M5Stack ATOM S3 Lite](https://docs.m5stack.com/en/core/AtomS3-Lite): ESP32-S3FN8, 8 MB flash, **no PSRAM**, native USB-C, 5 V in |
-| Balance serial (add-on 1) | An RS232 to 3.3 V TTL level shifter (MAX3232 type) on the Grove port: **G1 = firmware RX** (shifter TXD out), **G2 = firmware TX** (shifter RXD in), GND. Pins are build flags (`UART_RX_PIN`, `UART_TX_PIN`) |
-| USB drop drive (add-on 2) | The board's own USB-C port enumerates as a flash drive (`LABOPS DROP`) when `USB_MSC_UPLOAD` is defined. Copy CSV/TXT/PDF/Excel files onto it from any PC and they are sent to Django |
-| Build | `pio run -e atoms3-lite` (flash 36 % of the app slot, RAM 26 %, compiled and checked in this repo's history) |
-
-```text
-Balance DB9 --RS232--> [MAX3232 module] --3.3 V TTL--> ATOM S3 Lite Grove (G1 RX / G2 TX)
-Host PC <-- USB-C (drop drive, flashing) --> ATOM S3 Lite --Wi-Fi--> MQTT broker --> Django
-```
-
-Notes and cautions:
-- Power the level shifter from **3.3 V**, never 5 V, or its TTL output can overdrive G1 (the ESP32-S3 pins are not 5 V tolerant). Check your balance's DB9 pinout and whether it needs a null-modem swap; I did not wire a real balance.
-- No PSRAM: the drop drive is **192 KB** (`USB_DRIVE_KB_NO_PSRAM`) instead of 4 MB, enough for CSV/TXT/small Excel, not for large PDFs. Boards with PSRAM get the 4 MB drive: **M5Stack AtomS3R** (same Atom size and Grove port, 8 MB PSRAM; `pio run -e atoms3r`, octal PSRAM assumed, switch `memory_type` to `qio_qspi` if it boot-loops) or a generic devkit (`esp32-s3-devkitc-1` env).
-- `ARDUINO_USB_MODE=0` hands the USB port to the drop drive, so there is no USB serial monitor; logs go to UART0. To reflash, put the board in download mode per the M5Stack docs.
-- The Grove 5 V pin and the header pins G5-G8/G38/G39 are free for other add-ons; the front button is G41 and the LED G35 (unused by the firmware).
-- Wiring and pin choices here are my reading of the M5Stack docs, not tested on hardware.
+[Screenshots](#screenshots) | [Hardware example](#hardware-example-m5stack-atom-s3-lite) | [Reproduce](#reproducing-the-runs) | [Quickstart](#quickstart) | [MQTT topics](#mqtt-topics) | [Parser schemas](#parser-schemas-and-traceability) | [Remote actions](#remote-actions-admin---mcu) | [Diagnostics](#diagnostics-django-admin) | [OTA](#ota-firmware-updates-from-the-django-admin) | [Firmware](#firmware) | [Testing](#testing-and-what-is-not-verified) | [Limitations](#limitations)
 
 ## Screenshots
 
@@ -55,8 +34,36 @@ Captured from a live run: the Django stack (broker, Postgres, web, `mqtt_listene
 
 ![Firmware emulator log](docs/screenshots/firmware-emulator-log.png)
 
+**Diagnostics**: per-device data with aggregates by event, boot reason, location, device and day. Every number links to the raw event log.
 
-### Reproduce
+![Diagnostics: data and aggregates](docs/screenshots/server-diagnostics.png)
+
+**Drill-down**: the raw event log, here filtered to brownout boots.
+
+![Drill-down: raw event log filtered to brownout boots](docs/screenshots/server-event-log.png)
+
+## Hardware example: M5Stack ATOM S3 Lite
+
+| | |
+|---|---|
+| Board | [M5Stack ATOM S3 Lite](https://docs.m5stack.com/en/core/AtomS3-Lite): ESP32-S3FN8, 8 MB flash, **no PSRAM**, native USB-C, 5 V in |
+| Balance serial (add-on 1) | An RS232 to 3.3 V TTL level shifter (MAX3232 type) on the Grove port: **G1 = firmware RX** (shifter TXD out), **G2 = firmware TX** (shifter RXD in), GND. Pins are build flags (`UART_RX_PIN`, `UART_TX_PIN`) |
+| USB drop drive (add-on 2) | The board's own USB-C port enumerates as a flash drive (`LABOPS DROP`) when `USB_MSC_UPLOAD` is defined. Copy CSV/TXT/PDF/Excel files onto it from any PC and they are sent to Django |
+| Build | `pio run -e atoms3-lite` (flash 36 % of the app slot, RAM 26 %, compiled and checked in this repo's history) |
+
+```text
+Balance DB9 --RS232--> [MAX3232 module] --3.3 V TTL--> ATOM S3 Lite Grove (G1 RX / G2 TX)
+Host PC <-- USB-C (drop drive, flashing) --> ATOM S3 Lite --Wi-Fi--> MQTT broker --> Django
+```
+
+Notes and cautions:
+- Power the level shifter from **3.3 V**, never 5 V, or its TTL output can overdrive G1 (the ESP32-S3 pins are not 5 V tolerant). Check your balance's DB9 pinout and whether it needs a null-modem swap; I did not wire a real balance.
+- No PSRAM: the drop drive is **192 KB** (`USB_DRIVE_KB_NO_PSRAM`) instead of 4 MB, enough for CSV/TXT/small Excel, not for large PDFs. Boards with PSRAM get the 4 MB drive: **M5Stack AtomS3R** (same Atom size and Grove port, 8 MB PSRAM; `pio run -e atoms3r`, octal PSRAM assumed, switch `memory_type` to `qio_qspi` if it boot-loops) or a generic devkit (`esp32-s3-devkitc-1` env).
+- `ARDUINO_USB_MODE=0` hands the USB port to the drop drive, so there is no USB serial monitor; logs go to UART0. To reflash, put the board in download mode per the M5Stack docs.
+- The Grove 5 V pin and the header pins G5-G8/G38/G39 are free for other add-ons; the front button is G41 and the LED G35 (unused by the firmware).
+- Wiring and pin choices here are my reading of the M5Stack docs, not tested on hardware.
+
+## Reproducing the runs
 
 Real firmware on Linux (stop any Python emulator first, it uses the same device id):
 
@@ -138,8 +145,7 @@ Files are opaque bytes end to end: never decoded as text and never passed to a p
 
 **Admin -> Devices -> Diagnostics** shows the raw data per device (online, location, RSSI, uptime, last reset, boots, Wi-Fi drops, MQTT failures, free heap, firmware), sortable by RSSI, location, uptime or name and filterable by online/offline or location. There is no scoring or ranking. Below the table an **aggregate** (24 h / 7 d / 30 d) counts events by kind, boot reason, location, device and day, and **every number links to the raw event log** (filter by kind, location, device, date, or search any detail text). The Devices list also has RSSI, uptime and last-reset columns with filters, and a device page shows counters, an RSSI trend and its event log. JSON: `GET /api/diagnostics/?sort=rssi|uptime|location|name&days=7` (with `CONTROL_API_TOKEN`). Action **Request full diagnostics** forces a fresh report.
 
-![Diagnostics: data and aggregates](docs/screenshots/server-diagnostics.png)
-![Drill-down: raw event log filtered to brownout boots](docs/screenshots/server-event-log.png)
+See the [diagnostics screenshots](#screenshots).
 
 **What the MCU records and why reboots can be told apart.** At every boot it classifies `esp_reset_reason()`: `power_on` (supply lost, mains/USB unplugged, or first flash), `brownout` (supply dipped), `panic` (crash), `watchdog`, `reset_pin`, or a software reboot with the *reason it was asked for* (`cmd_reboot`, `ota`, `set_wifi`, `reset_config`, `factory_reset`, `wifi_trial_revert`, else `sw_unknown`). It also logs Wi-Fi drops (disconnect reason code and outage length) and MQTT failures/drops (PubSubClient state code, failed attempts, outage length).
 
