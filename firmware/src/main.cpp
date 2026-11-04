@@ -15,6 +15,10 @@ PubSubClient mqtt(network);
 Preferences prefs;
 String rawTopic, configTopic, statusTopic, cmdTopic, ackTopic;
 uint32_t lastCmdId = 0;
+String wifiSsid = WIFI_SSID, wifiPass = WIFI_PASS;  // NVS namespace "wifi" overrides secrets.h defaults
+bool wifiTrial = false;  // booted on pending creds; revert unless MQTT connects in time
+uint32_t bootMs = 0;
+const uint32_t TRIAL_MS = 45000;
 uint32_t configVersion = 0, baud = 9600, intervalMs = 1000, lastPoll = 0, seqNo = 0;
 uint8_t dataBits = 8, stopBits = 1;
 char parity = 'N';
@@ -47,6 +51,12 @@ void loadConfig() {
   parity = prefs.getChar("parity", 'N'); terminator = prefs.getString("term", "\r\n"); pollCommand = prefs.getString("poll", ""); enabled = prefs.getBool("enabled", true); prefs.end();
   applySerial();
 }
+void abandonTrial() {
+  prefs.begin("wifi", false); prefs.remove("nssid"); prefs.remove("npass"); prefs.end(); delay(100); ESP.restart();
+}
+void clearConfig() {  // keep cmdid so old signed commands stay unreplayable
+  prefs.begin("scale", false); uint32_t keep = prefs.getUInt("cmdid", 0); prefs.clear(); prefs.putUInt("cmdid", keep); prefs.end();
+}
 // HMAC-SHA256(COMMAND_TOKEN, "id|action|arg") as lowercase hex; matches server mqtt.sign()
 String hmacHex(const String &msg) {
   uint8_t out[32]; mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), (const uint8_t *)COMMAND_TOKEN, strlen(COMMAND_TOKEN), (const uint8_t *)msg.c_str(), msg.length(), out);
@@ -68,6 +78,18 @@ void onCommand(byte *payload, unsigned int length) {
   if (action == "ping") ack(id, true, String("pong fw=" FW_VERSION " up=") + millis() / 1000 + "s rssi=" + WiFi.RSSI());
   else if (action == "poll_now") { if (pollCommand.length()) { Serial1.print(pollCommand); ack(id, true, "polled"); } else ack(id, false, "no poll_command configured"); }
   else if (action == "send_serial") { Serial1.print(arg); ack(id, true, "sent " + String(arg.length()) + " bytes"); }
+  else if (action == "set_wifi") {
+    JsonDocument w; String ns, np;
+    if (deserializeJson(w, arg) || !(ns = String((const char *)(w["ssid"] | ""))).length() || ns.length() > 32) { ack(id, false, "arg must be {\"ssid\":..,\"pass\":..}"); return; }
+    np = String((const char *)(w["pass"] | ""));
+    prefs.begin("wifi", false); prefs.putString("nssid", ns); prefs.putString("npass", np); prefs.end();
+    ack(id, true, "stored pending creds, rebooting; reverts in " + String(TRIAL_MS / 1000) + "s if MQTT does not connect"); mqtt.loop(); delay(200); ESP.restart();
+  }
+  else if (action == "reset_config") { clearConfig(); ack(id, true, "device config cleared, rebooting (retained config will be re-applied)"); mqtt.loop(); delay(200); ESP.restart(); }
+  else if (action == "factory_reset") {
+    clearConfig(); prefs.begin("wifi", false); prefs.clear(); prefs.end();
+    ack(id, true, "factory reset: config + stored Wi-Fi cleared, rebooting on secrets.h Wi-Fi"); mqtt.loop(); delay(200); ESP.restart();
+  }
   else if (action == "reboot") { ack(id, true, "rebooting"); mqtt.loop(); delay(200); ESP.restart(); }
   else ack(id, false, "unknown action");
 }
@@ -80,18 +102,38 @@ void onMessage(char *topic, byte *payload, unsigned int length) {
   pollCommand = String((const char *)(doc["poll_command"] | "")); intervalMs = doc["poll_interval_ms"] | intervalMs;
   applySerial(); saveConfig(); publishStatus("online");
 }
-void connectWifi() { if (WiFi.status() == WL_CONNECTED) return; WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS); while (WiFi.status() != WL_CONNECTED) delay(500); }
+// Wi-Fi creds: "ssid"/"pass" = active, "nssid"/"npass" = pending (set_wifi). Pending is trialled once and only
+// promoted after MQTT connects; if the trial fails the MCU reverts and reboots, so a typo can't strand the device.
+void loadWifi() {
+  prefs.begin("wifi", false);
+  String ps = prefs.getString("nssid", "");
+  if (ps.length()) { wifiSsid = ps; wifiPass = prefs.getString("npass", ""); wifiTrial = true; }
+  else if (prefs.getString("ssid", "").length()) { wifiSsid = prefs.getString("ssid", ""); wifiPass = prefs.getString("pass", ""); }
+  prefs.end();
+}
+void commitWifi() {
+  prefs.begin("wifi", false); prefs.putString("ssid", wifiSsid); prefs.putString("pass", wifiPass); prefs.remove("nssid"); prefs.remove("npass"); prefs.end(); wifiTrial = false;
+}
+void connectWifi() {
+  if (WiFi.status() == WL_CONNECTED) return; WiFi.mode(WIFI_STA); WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
+  }
+}
 void connectMqtt() {
   while (!mqtt.connected()) {
     String will = "{\"state\":\"offline\",\"config_version\":" + String(configVersion) + ",\"fw\":\"" FW_VERSION "\"}";
-    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); publishStatus("online"); }
+    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); if (wifiTrial) commitWifi(); publishStatus("online"); }
+    else if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
     else delay(2000);
   }
 }
 void setup() {
   Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack";
   prefs.begin("scale", true); lastCmdId = prefs.getUInt("cmdid", 0); prefs.end();
-  loadConfig(); WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(512);
+  bootMs = millis(); loadWifi();
+  loadConfig(); WiFi.mode(WIFI_STA); WiFi.begin(wifiSsid.c_str(), wifiPass.c_str()); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(512);
 }
 void loop() {
   if (WiFi.status() != WL_CONNECTED) connectWifi();

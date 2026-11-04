@@ -84,3 +84,13 @@ class DeviceIntegrationTests(TestCase):
             self.assertEqual(self.client.post(url, '{"action":"bogus"}', content_type="application/json", headers=ok).status_code, 400)
             self.assertEqual(self.client.post(url, '{"action":"ping"}', content_type="application/json", headers=ok).status_code, 202)
         self.assertEqual(d.commands.count(), 1)
+
+    @patch("devices.mqtt.publish.single")
+    def test_set_wifi_password_not_stored(self, single):
+        import json
+        from .mqtt import send_command
+        d = Device.objects.create(device_id="w1", name="W", parser=self.mt)
+        cmd = send_command(d, "set_wifi", json.dumps({"ssid": "lab", "pass": "hunter2"}), "t")
+        cmd.refresh_from_db()
+        self.assertEqual(cmd.arg, "ssid=lab")
+        self.assertIn("hunter2", single.call_args.args[1])

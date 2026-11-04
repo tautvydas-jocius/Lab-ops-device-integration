@@ -81,11 +81,11 @@ class Reading(models.Model):
 
 
 class DeviceCommand(models.Model):
-    ACTIONS = [("ping", "Ping"), ("poll_now", "Poll now"), ("send_serial", "Send serial text"), ("reboot", "Reboot MCU")]
+    ACTIONS = [("ping", "Ping"), ("poll_now", "Poll now"), ("send_serial", "Send serial text"), ("reboot", "Reboot MCU"), ("set_wifi", "Set Wi-Fi credentials"), ("reset_config", "Reset device config"), ("factory_reset", "Factory reset (config + Wi-Fi)")]
     STATUS = [("pending", "pending"), ("ok", "ok"), ("failed", "failed")]
     device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="commands")
     action = models.CharField(max_length=20, choices=ACTIONS)
-    arg = models.CharField(max_length=200, blank=True, help_text="send_serial: text written to the instrument (terminator is NOT added)")
+    arg = models.CharField(max_length=200, blank=True, help_text="send_serial: text written to the instrument (terminator is NOT added). set_wifi: JSON {\"ssid\":\"..\",\"pass\":\"..\"}; password is not stored here")
     status = models.CharField(max_length=10, choices=STATUS, default="pending")
     result = models.TextField(blank=True)
     created_by = models.CharField(max_length=150, blank=True)

@@ -45,7 +45,7 @@ Settings come from environment variables: `DATABASE_URL` or `POSTGRES_*`, `MQTT_
 
 ## Remote actions (admin -> MCU)
 
-Actions: `ping`, `poll_now`, `send_serial` (arg = text), `reboot`. Trigger them from Django admin (Devices list -> action menu, or Device commands -> Add) or the token-protected API:
+Actions: `ping`, `poll_now`, `send_serial` (arg = text), `reboot`, `set_wifi` (arg = `{"ssid":"..","pass":".."}`), `reset_config`, `factory_reset`. Trigger them from Django admin (Devices list -> action menu, or Device commands -> Add) or the token-protected API:
 
 ```sh
 export CONTROL_API_TOKEN=$(openssl rand -hex 24)   # set before docker compose up; API is disabled (403) when unset
@@ -54,6 +54,10 @@ curl -H "Authorization: Bearer $CONTROL_API_TOKEN" http://127.0.0.1:8011/api/dev
 ```
 
 Server publishes `{prefix}/{id}/cmd` `{"id","action","arg","sig"}`; the MCU answers on `{prefix}/{id}/ack` `{"id","ok","result"}`. `sig` is HMAC-SHA256 over `id|action|arg` keyed with the per-device command token (Device admin page, read-only); the token never travels over MQTT. Put it in `secrets.h` as `COMMAND_TOKEN`. The firmware drops bad signatures silently and rejects non-increasing ids (replay protection, persisted in NVS). Not encrypted: use MQTT TLS and broker ACLs outside a trusted LAN.
+
+### Wi-Fi credentials and reset (NVS)
+
+The MCU keeps Wi-Fi in flash (NVS namespace `wifi`); `secrets.h` is only the fallback. `set_wifi` stores the new credentials as *pending*, reboots, and trials them: they become active only after MQTT connects, otherwise the MCU drops them after 45 s and reboots on the old ones, so a typo cannot strand a remote device. The password is sent signed but unencrypted over MQTT (use TLS) and is never saved in Device commands history, only the SSID. `reset_config` wipes the stored serial/poll config (the retained server config is re-applied on reconnect); `factory_reset` also wipes stored Wi-Fi, returning to `secrets.h`. Both keep the replay counter.
 
 ## Firmware
 
