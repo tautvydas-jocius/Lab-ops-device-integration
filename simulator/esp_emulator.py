@@ -13,6 +13,9 @@ ap.add_argument("--host", default="127.0.0.1"); ap.add_argument("--port", type=i
 ap.add_argument("--state", default=".emu"); ap.add_argument("--drop", default=".emu/drop")
 ap.add_argument("--wifi", default="lab:labpass", help="comma list ssid:pass of networks the emulated radio can join (secrets.h default is the first)")
 ap.add_argument("--idle", type=float, default=2.0)
+ap.add_argument("--balance-hz", type=float, default=0, help="model a UART balance streaming this many lines/s into a bounded RX buffer (0 = legacy timer emission)")
+ap.add_argument("--rx-buffer", type=int, default=256, help="UART RX buffer bytes (Arduino-ESP32 default 256; firmware now sets 2048)")
+ap.add_argument("--pump", action="store_true", help="service the UART inside blocking transfers (the firmware's pumpSerial())")
 A = ap.parse_args()
 os.makedirs(A.drop, exist_ok=True); os.makedirs(A.state, exist_ok=True)
 NVS = os.path.join(A.state, f"{A.id}.nvs.json")
@@ -26,10 +29,32 @@ def nvs_load():
 def nvs_save(d): json.dump(d, open(NVS, "w"))
 def hmac_hex(msg): return hmac.new(A.token.encode(), msg.encode(), hashlib.sha256).hexdigest()
 
+class Uart:
+    """Bounded RX buffer filled by the 'balance' at --balance-hz; drained only when the firmware loop (or pump) runs, like a real UART FIFO."""
+    def __init__(self, cap): self.cap, self.buf, self.lock = cap, [], threading.Lock(); self.generated = self.lost = self.published = 0; self.used = 0
+    def feed(self, line):
+        with self.lock:
+            self.generated += 1
+            if self.used + len(line) > self.cap: self.lost += 1; return  # overflow: bytes dropped, the line is gone
+            self.buf.append(line); self.used += len(line)
+    def drain(self):
+        with self.lock: out, self.buf, self.used = self.buf, [], 0
+        return out
+
 class Mcu:
     def __init__(self):
         self.next_reason = None; self.lock = threading.Lock(); self.ota_evt = threading.Event(); self.ota_chunk = None; self.ack_evt = {}; self.sent = {}; self.stop = False
-        self.boot()
+        self.uart = Uart(A.rx_buffer); self.boot()
+        if A.balance_hz: threading.Thread(target=self.balance, daemon=True).start()
+    def balance(self):
+        i = 0
+        while not self.stop:
+            time.sleep(1 / A.balance_hz); i += 1; self.uart.feed(f"S S      {12.3456 + random.uniform(-.001, .001):0.4f} g\r\n")
+    def pump(self):
+        """firmware pumpSerial(): drain the UART and publish each line (only when the MQTT link is up)"""
+        if not A.balance_hz: return
+        for line in self.uart.drain():
+            if self.mqtt_up and self.cfg.get('enabled'): self.seq += 1; self.uart.published += 1; self.client.publish(T('raw'), json.dumps({'line': line, 'seq': self.seq, 'uptime_ms': int((time.monotonic() - self.boot_t) * 1000)}))
     def boot(self):
         """Emulates power-up: load NVS, pick Wi-Fi (pending creds => trial), build MQTT client."""
         self.boot_t = time.monotonic(); self.rssi = -58; self.diag_full = True
@@ -130,7 +155,11 @@ class Mcu:
         for i in range(chunks):
             for attempt in range(4):
                 self.ota_evt.clear(); self.client.publish(T("ota_req"), json.dumps({"image": img, "index": i}))
-                if self.ota_evt.wait(4) and self.ota_chunk and self.ota_chunk[0] == i: break
+                for _ in range(40):
+                    if self.ota_evt.wait(.1): break
+                    if A.pump: self.pump()
+                if A.pump: self.pump()
+                if self.ota_evt.is_set() and self.ota_chunk and self.ota_chunk[0] == i: break
             else: return self.ack(id_, False, f"ota timeout at chunk {i}")
             data = self.ota_chunk[1]
             if len(data) != min(4096, size - i * 4096): return self.ack(id_, False, f"ota chunk {i} has wrong length")
@@ -143,8 +172,12 @@ class Mcu:
         meta = {"xfer": xfer, "name": name, "size": len(data), "chunks": chunks, "sha256": sha, "sig": hmac_hex(f"{xfer}|{name}|{len(data)}|{sha}")}
         e = self.ack_evt[xfer] = {"evt": threading.Event()}; base = T(f"file/{xfer}")
         self.client.publish(base + "/meta", json.dumps(meta))
-        for i in range(chunks): self.client.publish(f"{base}/{i}", data[i*CH:(i+1)*CH]); time.sleep(.003)
-        if e["evt"].wait(15): return 1 if e["ok"] else 2
+        for i in range(chunks):
+            self.client.publish(f"{base}/{i}", data[i*CH:(i+1)*CH]); time.sleep(.003)
+            if A.pump: self.pump()
+        for _ in range(150):
+            if e["evt"].wait(.1): return 1 if e["ok"] else 2
+            if A.pump: self.pump()
         return 0
     def drop_scan(self):
         for f in sorted(os.listdir(A.drop)):
@@ -161,7 +194,8 @@ class Mcu:
             if self.trial and now - self.boot_t > TRIAL_S:  # firmware: abandonTrial()
                 w = self.nvs.get("wifi", {}); w.pop("pending", None); self.save(wifi=w); log("trial FAILED -> reverting to previous Wi-Fi"); self.client.loop_stop(); self.nvs["diag"]["intent"] = "wifi_trial_revert"; self.save(); self.boot(); continue
             if self.mqtt_up and now - getattr(self, 'last_diag', 0) > DIAG_S: self.last_diag = now; self.publish_diag()
-            if self.mqtt_up and self.cfg.get("enabled") and now - self.last_emit >= max(.1, self.cfg["poll_interval_ms"] / 1000):
+            if A.balance_hz: self.pump(); (self.mqtt_up and now - getattr(self, 'last_stat', 0) > 5 and (setattr(self, 'last_stat', now), log(f'uart: generated={self.uart.generated} published={self.uart.published} lost={self.uart.lost}')))
+            elif self.mqtt_up and self.cfg.get("enabled") and now - self.last_emit >= max(.1, self.cfg["poll_interval_ms"] / 1000):
                 self.last_emit = now; self.seq += 1
                 self.client.publish(T("raw"), json.dumps({"line": f"S S      {12.3456 + random.uniform(-.001, .001):0.4f} g", "seq": self.seq, "uptime_ms": int((now - self.boot_t) * 1000)}))
             if self.mqtt_up and now - last_scan > A.idle:
@@ -170,5 +204,11 @@ class Mcu:
                     if time.time() - max([os.path.getmtime(os.path.join(A.drop, f)) for f in os.listdir(A.drop)] or [0]) > A.idle: self.drop_scan()
                 except Exception as ex: log("drop scan error", ex)
             time.sleep(.05)
-try: Mcu().run()
-except KeyboardInterrupt: pass
+import signal
+m = Mcu()
+def bye(*_):
+    if A.balance_hz: m.pump(); time.sleep(.5); log(f"uart: generated={m.uart.generated} published={m.uart.published} lost={m.uart.lost}")  # final line, read by concurrency_test.py
+    os._exit(0)
+signal.signal(signal.SIGTERM, bye)
+try: m.run()
+except KeyboardInterrupt: bye()

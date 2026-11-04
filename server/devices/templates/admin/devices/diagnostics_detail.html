@@ -1,15 +1,14 @@
 {% extends "admin/base_site.html" %}
-{% block extrastyle %}{{ block.super }}<style>.diag td,.diag th{padding:5px 10px;text-align:left}.crit{color:#c62828}.warn{color:#ef6c00}.info{color:#555}</style>{% endblock %}
+{% block extrastyle %}{{ block.super }}<style>.diag td,.diag th{padding:5px 10px;text-align:left}</style>{% endblock %}
 {% block content %}
-<p><a href="{% url 'admin:devices_diagnostics' %}">&larr; all devices</a> | <a href="{% url 'admin:devices_device_change' d.pk %}">device settings</a></p>
-<h2>{{ d.device_id }} <small>{{ d.name }} {% if d.location %}&middot; {{ d.location }}{% endif %}</small></h2>
-<p><strong>Health {{ a.score }}/100, {{ a.verdict }}.</strong> {% if d.online %}Online{% else %}Offline{% endif %}, firmware {{ d.fw_version|default:"?" }}, last reset <strong>{{ d.last_reset|default:"?" }}</strong>, boot #{{ d.boot_no|default:"?" }}, free heap {{ d.free_heap|default:"?" }} B (min {{ d.min_free_heap|default:"?" }}).</p>
-{% if a.findings %}<h3>What to do</h3><ul>{% for f in a.findings %}<li class="{{ f.severity|slice:':4' }}"><strong>{{ f.finding }}</strong>: {{ f.advice }}</li>{% endfor %}</ul>{% endif %}
+<p><a href="{% url 'admin:devices_diagnostics' %}">&larr; all devices</a> | <a href="{% url 'admin:devices_device_change' d.pk %}">device settings</a> | <a href="{% url 'admin:devices_deviceevent_changelist' %}?device__device_id__exact={{ d.device_id }}">full event log</a></p>
+<h2>{{ d.device_id }} <small>{{ d.name }}{% if d.location %} &middot; {{ d.location }}{% endif %}</small></h2>
+<p>{% if d.online %}Online{% else %}Offline{% endif %}, firmware {{ d.fw_version|default:"?" }}, last reset <strong>{{ d.last_reset|default:"?" }}</strong>, boot #{{ d.boot_no|default:"?" }}, uptime {{ d.uptime_s|default:"?" }} s, free heap {{ d.free_heap|default:"?" }} B (min {{ d.min_free_heap|default:"?" }} B), RSSI {{ d.rssi|default:"?" }} dBm.</p>
 <h3>Signal (last {{ d.heartbeats.count }} heartbeats)</h3>
-{% if spark %}<svg width="600" height="64" style="background:#fafafa;border:1px solid #ddd"><polyline points="{{ spark }}" fill="none" stroke="#1565c0" stroke-width="2"/></svg><br><small>min {{ rssi_min }} dBm, max {{ rssi_max }} dBm, now {{ d.rssi }} dBm ({{ label }})</small>{% else %}<p>Not enough heartbeats yet.</p>{% endif %}
+{% if spark %}<svg width="600" height="64" style="background:#fafafa;border:1px solid #ddd"><polyline points="{{ spark }}" fill="none" stroke="#1565c0" stroke-width="2"/></svg><br><small>min {{ rssi_min }} dBm, max {{ rssi_max }} dBm, now {{ d.rssi }} dBm</small>{% else %}<p>Not enough heartbeats yet.</p>{% endif %}
 <h3>Counters since first boot (persisted on the MCU)</h3>
 <table class="diag"><tr>{% for k, v in counters %}<th>{{ k }}</th>{% endfor %}</tr><tr>{% for k, v in counters %}<td>{{ v }}</td>{% endfor %}</tr></table>
-<h3>Event history</h3>
+<h3>Event log</h3>
 <table class="diag"><thead><tr><th>Received</th><th>Event</th><th>Detail</th><th>Boot</th><th>Uptime at event</th></tr></thead><tbody>
 {% for e in events %}<tr><td>{{ e.received_at|date:"Y-m-d H:i:s" }}</td><td><strong>{{ e.kind }}</strong></td><td>{{ e.detail }}</td><td>#{{ e.boot_no }}</td><td>{{ e.uptime_s }} s</td></tr>{% empty %}<tr><td colspan="5">No events yet.</td></tr>{% endfor %}</tbody></table>
 {% endblock %}

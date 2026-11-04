@@ -220,12 +220,14 @@ def firmware_download(request, pk):
     return FileResponse(f.file.open("rb"), as_attachment=True, filename=f"firmware-{f.version}.bin")
 
 def diagnostics_api(request):
+    """Data only (no scoring). ?sort=name|rssi|uptime|location  ?days=N adds event aggregates for the last N days."""
     if not settings.CONTROL_API_TOKEN or not hmac.compare_digest(bearer(request), settings.CONTROL_API_TOKEN): return JsonResponse({"error": "unauthorized"}, status=401)
-    from .diagnostics import snapshot, rssi_label
-    out = []
-    for d in Device.objects.all():
-        a = snapshot(d)
-        out.append({"device_id": d.device_id, "location": d.location, "online": d.online, "rssi": d.rssi, "rssi_label": rssi_label(d.rssi), "uptime_s": d.uptime_s, "free_heap": d.free_heap, "boot_no": d.boot_no, "last_reset": d.last_reset, "counters": d.diag_counters, "last_diag": d.diag_at, "fw_version": d.fw_version, **a})
-    sort = request.GET.get("sort", "score")
-    out.sort(key={"rssi": lambda x: (x["rssi"] is None, -(x["rssi"] or 0)), "uptime": lambda x: x["uptime_s"] or 0, "location": lambda x: x["location"] or "~"}.get(sort, lambda x: x["score"]))
-    return JsonResponse({"devices": out})
+    from .diagnostics import rssi_label, aggregate
+    from .models import DeviceEvent
+    out = [{"device_id": d.device_id, "location": d.location, "online": d.online, "rssi": d.rssi, "rssi_label": rssi_label(d.rssi), "uptime_s": d.uptime_s, "free_heap": d.free_heap,
+            "min_free_heap": d.min_free_heap, "boot_no": d.boot_no, "last_reset": d.last_reset, "counters": d.diag_counters, "last_diag": d.diag_at, "fw_version": d.fw_version} for d in Device.objects.all()]
+    sort = request.GET.get("sort", "name")
+    out.sort(key={"rssi": lambda x: (x["rssi"] is None, -(x["rssi"] or 0)), "uptime": lambda x: x["uptime_s"] or 0, "location": lambda x: x["location"] or "~"}.get(sort, lambda x: x["device_id"]))
+    body = {"devices": out}
+    if request.GET.get("days", "").isdigit(): body["aggregate"] = aggregate(DeviceEvent.objects.all(), int(request.GET["days"]))
+    return JsonResponse(body)

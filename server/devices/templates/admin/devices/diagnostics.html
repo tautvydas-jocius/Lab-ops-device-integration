@@ -1,21 +1,27 @@
 {% extends "admin/base_site.html" %}
 {% block extrastyle %}{{ block.super }}<style>
-.diag td,.diag th{padding:6px 10px;vertical-align:top}.diag .score{font-weight:700;font-size:1.1em}
-.pill{border-radius:10px;padding:1px 8px;font-size:.85em;color:#fff}.healthy{background:#2e7d32}.attn{background:#ef6c00}.act{background:#c62828}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%}.on{background:#2e7d32}.off{background:#999}.filters a{margin-right:10px}</style>{% endblock %}
+.diag td,.diag th{padding:6px 10px;vertical-align:top;text-align:left}.dot{display:inline-block;width:9px;height:9px;border-radius:50%}.on{background:#2e7d32}.off{background:#999}
+.filters a{margin-right:10px}.agg{display:flex;gap:28px;flex-wrap:wrap;margin:10px 0 18px}.agg table td,.agg table th{padding:3px 12px 3px 0;text-align:left}.num{text-align:right!important}</style>{% endblock %}
 {% block content %}
-<p>{{ n_online }} of {{ n_total }} shown device(s) online. Sort:
- <span class="filters"><a href="?sort=score">health</a><a href="?sort=rssi&dir=desc">RSSI</a><a href="?sort=location">location</a><a href="?sort=uptime">uptime</a><a href="?sort=name">name</a></span>
- Show: <span class="filters"><a href="?sort={{ sort }}&online=1">online</a><a href="?sort={{ sort }}&online=0">offline</a>{% for l in locations %}<a href="?sort={{ sort }}&location={{ l|urlencode }}">{{ l }}</a>{% endfor %}<a href="?sort={{ sort }}">all</a></span></p>
-<table class="diag"><thead><tr><th></th><th>Device</th><th>Location</th><th>Score</th><th>RSSI</th><th>Uptime</th><th>Last reset</th><th>Boots</th><th>Wi-Fi drops</th><th>MQTT fails</th><th>Verdict / top finding</th></tr></thead><tbody>
+<p>{{ n_online }} of {{ n_total }} shown device(s) online. Sort: <span class="filters"><a href="?sort=name&days={{ days }}">name</a><a href="?sort=rssi&dir=desc&days={{ days }}">RSSI</a><a href="?sort=location&days={{ days }}">location</a><a href="?sort=uptime&days={{ days }}">uptime</a></span>
+ Show: <span class="filters"><a href="?sort={{ sort }}&online=1&days={{ days }}">online</a><a href="?sort={{ sort }}&online=0&days={{ days }}">offline</a>{% for l in locations %}<a href="?sort={{ sort }}&location={{ l|urlencode }}&days={{ days }}">{{ l }}</a>{% endfor %}<a href="?sort={{ sort }}&days={{ days }}">all</a></span></p>
+<table class="diag"><thead><tr><th></th><th>Device</th><th>Location</th><th class="num">RSSI</th><th class="num">Uptime</th><th>Last reset</th><th class="num">Boots</th><th class="num">Wi-Fi drops</th><th class="num">MQTT fails</th><th class="num">Free heap</th><th>Firmware</th></tr></thead><tbody>
 {% for r in rows %}{% with d=r.d c=r.d.diag_counters %}
 <tr><td><span class="dot {% if d.online %}on{% else %}off{% endif %}" title="{% if d.online %}online{% else %}offline{% endif %}"></span></td>
-<td><a href="{% url 'admin:devices_diagnostics_detail' d.device_id %}"><strong>{{ d.device_id }}</strong></a><br><small>{{ d.name }}</small></td>
-<td>{{ d.location|default:"-" }}</td><td class="score">{{ r.a.score }}</td>
-<td>{% if d.rssi is not None %}{{ d.rssi }} dBm<br><small>{{ r.label }}</small>{% else %}-{% endif %}</td>
-<td>{% if d.uptime_s is not None %}{{ d.uptime_s|floatformat:0 }} s{% else %}-{% endif %}</td>
-<td>{{ d.last_reset|default:"-" }}</td><td>{{ c.boots|default:"-" }}</td><td>{{ c.wifi_drops|default:0 }}</td><td>{{ c.mqtt_fails|default:0 }}</td>
-<td><span class="pill {% if r.a.verdict == 'healthy' %}healthy{% elif r.a.verdict == 'act now' %}act{% else %}attn{% endif %}">{{ r.a.verdict }}</span>
-{% if r.top %}<br>{{ r.top.finding }}<br><small>{{ r.top.advice }}</small>{% endif %}</td></tr>
+<td><a href="{% url 'admin:devices_diagnostics_detail' d.device_id %}"><strong>{{ d.device_id }}</strong></a><br><small>{{ d.name }}</small></td><td>{{ d.location|default:"-" }}</td>
+<td class="num">{% if d.rssi is not None %}{{ d.rssi }} dBm <small>({{ r.label }})</small>{% else %}-{% endif %}</td><td class="num">{% if d.uptime_s is not None %}{{ d.uptime_s }} s{% else %}-{% endif %}</td>
+<td>{{ d.last_reset|default:"-" }}</td><td class="num">{{ c.boots|default:"-" }}</td><td class="num">{{ c.wifi_drops|default:"-" }}</td><td class="num">{{ c.mqtt_fails|default:"-" }}</td><td class="num">{{ d.free_heap|default:"-" }}</td><td>{{ d.fw_version|default:"-" }}</td></tr>
 {% endwith %}{% empty %}<tr><td colspan="11">No devices.</td></tr>{% endfor %}</tbody></table>
+
+<h2>Aggregate, last {{ days }} day{{ days|pluralize }}
+ <small class="filters" style="font-weight:normal"> <a href="?days=1&sort={{ sort }}">24 h</a><a href="?days=7&sort={{ sort }}">7 d</a><a href="?days=30&sort={{ sort }}">30 d</a></small></h2>
+<p>{{ agg.total }} logged event{{ agg.total|pluralize }}. Every number links to the raw event log.</p>
+<div class="agg">
+<table><caption><strong>By event</strong></caption>{% for k, n in agg.kinds.items %}<tr><td>{{ k }}</td><td class="num"><a href="{% url 'admin:devices_deviceevent_changelist' %}?kind={{ k|urlencode }}&received_at__gte={{ agg.since|date:'Y-m-d' }}+00:00:00">{{ n }}</a></td></tr>{% empty %}<tr><td colspan="2">none</td></tr>{% endfor %}</table>
+<table><caption><strong>Boot reasons</strong></caption>{% for k, n in agg.boot_reasons.items %}<tr><td>{{ k }}</td><td class="num"><a href="{% url 'admin:devices_deviceevent_changelist' %}?kind=boot&q={{ k|urlencode }}">{{ n }}</a></td></tr>{% empty %}<tr><td colspan="2">none</td></tr>{% endfor %}</table>
+<table><caption><strong>By location</strong></caption>{% for loc, ks in agg.per_location.items %}<tr><td>{{ loc }}</td><td>{% for k, n in ks.items %}{{ k }} <strong>{{ n }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>{% empty %}<tr><td colspan="2">none</td></tr>{% endfor %}</table>
+<table><caption><strong>By device</strong></caption>{% for did, ks in agg.per_device.items %}<tr><td><a href="{% url 'admin:devices_deviceevent_changelist' %}?device__device_id__exact={{ did }}">{{ did }}</a></td><td>{% for k, n in ks.items %}{{ k }} <strong>{{ n }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>{% empty %}<tr><td colspan="2">none</td></tr>{% endfor %}</table>
+<table><caption><strong>By day</strong></caption>{% for day, ks in agg.per_day.items %}<tr><td>{{ day }}</td><td>{% for k, n in ks.items %}{{ k }} <strong>{{ n }}</strong>{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>{% empty %}<tr><td colspan="2">none</td></tr>{% endfor %}</table>
+</div>
+<p><a href="{% url 'admin:devices_deviceevent_changelist' %}">Open the full event log</a> (filter by kind, location, device, date; search any detail text).</p>
 {% endblock %}

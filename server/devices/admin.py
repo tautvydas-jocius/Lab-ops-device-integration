@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import Device, DeviceCommand, DeviceEvent, DeviceHeartbeat, FirmwareImage, ParserSchema, UploadedFile, Reading
 from .mqtt import send_command
-from .diagnostics import rssi_label, snapshot
+from .diagnostics import rssi_label, aggregate
 class RssiFilter(admin.SimpleListFilter):
     title = "Wi-Fi signal"; parameter_name = "rssi"
     BUCKETS = {"good": (-67, 0), "ok": (-75, -68), "weak": (-82, -76), "poor": (-200, -83)}
@@ -31,14 +31,13 @@ class DeviceAdmin(admin.ModelAdmin):
         return [path("diagnostics/", v(self.diagnostics), name="devices_diagnostics"), path("diagnostics/<slug:device_id>/", v(self.diagnostics_detail), name="devices_diagnostics_detail")] + super().get_urls()
     def diagnostics(self, request):
         from django.template.response import TemplateResponse
-        rows = []
-        for d in Device.objects.all():
-            a = snapshot(d); rows.append({"d": d, "a": a, "label": rssi_label(d.rssi), "top": a["findings"][0] if a["findings"] else None})
-        sort = request.GET.get("sort", "score"); keys = {"score": lambda r: r["a"]["score"], "rssi": lambda r: (r["d"].rssi is None, -(r["d"].rssi or 0)), "uptime": lambda r: r["d"].uptime_s or 0, "location": lambda r: (r["d"].location or "~", r["d"].device_id), "name": lambda r: r["d"].device_id}
-        rows.sort(key=keys.get(sort, keys["score"]), reverse=request.GET.get("dir") == "desc")
+        days = int(request.GET["days"]) if request.GET.get("days", "").isdigit() and 0 < int(request.GET["days"]) <= 90 else 1
+        rows = [{"d": d, "label": rssi_label(d.rssi)} for d in Device.objects.all()]
+        sort = request.GET.get("sort", "name"); keys = {"rssi": lambda r: (r["d"].rssi is None, -(r["d"].rssi or 0)), "uptime": lambda r: r["d"].uptime_s or 0, "location": lambda r: (r["d"].location or "~", r["d"].device_id), "name": lambda r: r["d"].device_id}
+        rows.sort(key=keys.get(sort, keys["name"]), reverse=request.GET.get("dir") == "desc")
         if request.GET.get("online") in ("1", "0"): rows = [r for r in rows if r["d"].online == (request.GET["online"] == "1")]
         if request.GET.get("location"): rows = [r for r in rows if r["d"].location == request.GET["location"]]
-        ctx = dict(self.admin_site.each_context(request), title="Device diagnostics", rows=rows, sort=sort, opts=self.model._meta,
+        ctx = dict(self.admin_site.each_context(request), title="Device diagnostics", rows=rows, sort=sort, days=days, agg=aggregate(DeviceEvent.objects.all(), days), opts=self.model._meta,
                    locations=sorted({d.location for d in Device.objects.all() if d.location}), n_online=sum(r["d"].online for r in rows), n_total=len(rows), q=request.GET)
         return TemplateResponse(request, "admin/devices/diagnostics.html", ctx)
     def diagnostics_detail(self, request, device_id):
@@ -50,7 +49,7 @@ class DeviceAdmin(admin.ModelAdmin):
         if len(pts) > 1:
             lo, hi = min(pts), max(pts); span = max(hi - lo, 1)
             spark = " ".join(f"{i * 600 / (len(pts) - 1):.1f},{58 - (v - lo) * 52 / span:.1f}" for i, v in enumerate(pts))
-        ctx = dict(self.admin_site.each_context(request), title=f"Diagnostics: {d.device_id}", d=d, a=snapshot(d), events=d.events.all()[:60], spark=spark, rssi_min=min(pts, default=None), rssi_max=max(pts, default=None),
+        ctx = dict(self.admin_site.each_context(request), title=f"Diagnostics: {d.device_id}", d=d, events=d.events.all()[:60], spark=spark, rssi_min=min(pts, default=None), rssi_max=max(pts, default=None),
                    counters=sorted((d.diag_counters or {}).items()), opts=self.model._meta, label=rssi_label(d.rssi))
         return TemplateResponse(request, "admin/devices/diagnostics_detail.html", ctx)
     actions = ["ping", "poll_now", "request_diag", "reboot", "ota_newest", "ota_choose"]
@@ -124,7 +123,8 @@ class FirmwareImageAdmin(admin.ModelAdmin):
 @admin.register(DeviceEvent)
 class DeviceEventAdmin(admin.ModelAdmin):
     list_display = ("received_at", "device", "kind", "detail", "boot_no", "uptime_s")
-    list_filter = ("device", "kind")
+    list_filter = ("kind", "device__location", "device", "received_at")
+    date_hierarchy = "received_at"
     search_fields = ("detail",)
     readonly_fields = tuple(f.name for f in DeviceEvent._meta.fields)
     def has_add_permission(self, request): return False

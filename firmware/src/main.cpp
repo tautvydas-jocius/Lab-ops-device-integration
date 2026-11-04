@@ -7,10 +7,10 @@
 #include <Update.h>
 #if __has_include(<esp_eap_client.h>)
 #include <esp_eap_client.h>  // Arduino-ESP32 3.x / IDF 5
-#define EAP_SET(id, user, pass) do { esp_eap_client_set_identity((const uint8_t *)id, strlen(id)); esp_eap_client_set_username((const uint8_t *)user, strlen(user)); esp_eap_client_set_password((const uint8_t *)pass, strlen(pass)); esp_wifi_sta_enterprise_enable(); } while (0)
+#define EAP_SET(id, user, pass) do { esp_eap_client_set_identity((const uint8_t *)(id), strlen(id)); esp_eap_client_set_username((const uint8_t *)(user), strlen(user)); esp_eap_client_set_password((const uint8_t *)(pass), strlen(pass)); esp_wifi_sta_enterprise_enable(); } while (0)
 #else
 #include <esp_wpa2.h>  // Arduino-ESP32 2.x
-#define EAP_SET(id, user, pass) do { esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)id, strlen(id)); esp_wifi_sta_wpa2_ent_set_username((uint8_t *)user, strlen(user)); esp_wifi_sta_wpa2_ent_set_password((uint8_t *)pass, strlen(pass)); esp_wifi_sta_wpa2_ent_enable(); } while (0)
+#define EAP_SET(id, user, pass) do { esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)(id), strlen(id)); esp_wifi_sta_wpa2_ent_set_username((uint8_t *)(user), strlen(user)); esp_wifi_sta_wpa2_ent_set_password((uint8_t *)(pass), strlen(pass)); esp_wifi_sta_wpa2_ent_enable(); } while (0)
 #endif
 #include "secrets.h"
 
@@ -51,7 +51,7 @@ uint32_t serialConfig() {
   if (stopBits == 2) return parity == 'E' ? SERIAL_8E2 : (parity == 'O' ? SERIAL_8O2 : SERIAL_8N2);
   return parity == 'E' ? SERIAL_8E1 : (parity == 'O' ? SERIAL_8O1 : SERIAL_8N1);
 }
-void applySerial() { Serial1.end(); Serial1.begin(baud, serialConfig(), UART_RX, UART_TX); }
+void applySerial() { Serial1.end(); Serial1.setRxBufferSize(2048); Serial1.begin(baud, serialConfig(), UART_RX, UART_TX); }
 void publishStatus(const char *state) {
   if (!mqtt.connected()) return;
   JsonDocument doc; doc["state"] = state; doc["config_version"] = configVersion; doc["fw"] = FW_VERSION;
@@ -67,6 +67,19 @@ void loadConfig() {
   intervalMs = prefs.getUInt("interval", 1000); dataBits = prefs.getUChar("bits", 8); stopBits = prefs.getUChar("stops", 1);
   parity = prefs.getChar("parity", 'N'); terminator = prefs.getString("term", "\r\n"); pollCommand = prefs.getString("poll", ""); enabled = prefs.getBool("enabled", true); prefs.end();
   applySerial();
+}
+// Poll tick + serial line reader. Called from loop() AND from every long blocking section (file upload, OTA, CRC over a
+// 4 MB drive) because the UART FIFO is only drained here: unpumped, a balance streaming 960 B/s overflows the buffer
+// in ~2 s and lines are silently lost. Never call from inside an MQTT callback (PubSubClient is not re-entrant).
+void pumpSerial() {
+  if (enabled && pollCommand.length() && millis() - lastPoll >= intervalMs) { Serial1.print(pollCommand); lastPoll = millis(); }
+  while (Serial1.available()) {
+    char c = (char)Serial1.read(); lineBuffer += c;
+    if (lineBuffer.endsWith(terminator)) {
+      JsonDocument doc; doc["line"] = lineBuffer; doc["seq"] = ++seqNo; doc["uptime_ms"] = millis();
+      String payload; serializeJson(doc, payload); if (enabled) mqtt.publish(rawTopic.c_str(), payload.c_str()); lineBuffer = "";
+    } else if (lineBuffer.length() > 256) lineBuffer = "";
+  }
 }
 // ---- Diagnostics -----------------------------------------------------------------------------------------------
 // Persistence policy: events and counters go to NVS only when something happens (reboot, Wi-Fi/MQTT outage ends) plus an
@@ -197,7 +210,7 @@ void otaRun() {
     bool got = false;
     for (int attempt = 0; attempt < 4 && !got; attempt++) {
       otaLen = -1; JsonDocument r; r["image"] = otaImage; r["index"] = i; String req; serializeJson(r, req); mqtt.publish(otaReqTopic.c_str(), req.c_str());
-      for (uint32_t t = millis(); millis() - t < 4000 && !got;) { mqtt.loop(); if (otaLen >= 0 && otaIdx == i) got = true; else delay(2); }
+      for (uint32_t t = millis(); millis() - t < 4000 && !got;) { mqtt.loop(); pumpSerial(); if (otaLen >= 0 && otaIdx == i) got = true; else delay(2); }
     }
     if (!got) return fail("ota timeout at chunk " + String(i));
     uint32_t want = min((uint32_t)4096, otaSize - i * 4096);
@@ -240,7 +253,7 @@ void commitWifi() {
 }
 void beginWifi() {
   WiFi.mode(WIFI_STA);
-  if (wifiUser.length()) { EAP_SET(wifiIdent.length() ? wifiIdent.c_str() : wifiUser.c_str(), wifiUser.c_str(), wifiPass.c_str()); WiFi.begin(wifiSsid.c_str()); }
+  if (wifiUser.length()) { const char *eapId = wifiIdent.length() ? wifiIdent.c_str() : wifiUser.c_str(); EAP_SET(eapId, wifiUser.c_str(), wifiPass.c_str()); WiFi.begin(wifiSsid.c_str()); }
   else WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
 }
 void connectWifi() {
@@ -290,12 +303,5 @@ void loop() {
 #ifdef USB_MSC_UPLOAD
   usbDropPoll();
 #endif
-  if (enabled && pollCommand.length() && millis() - lastPoll >= intervalMs) { Serial1.print(pollCommand); lastPoll = millis(); }
-  while (Serial1.available()) {
-    char c = (char)Serial1.read(); lineBuffer += c;
-    if (lineBuffer.endsWith(terminator)) {
-      JsonDocument doc; doc["line"] = lineBuffer; doc["seq"] = ++seqNo; doc["uptime_ms"] = millis();
-      String payload; serializeJson(doc, payload); if (enabled) mqtt.publish(rawTopic.c_str(), payload.c_str()); lineBuffer = "";
-    } else if (lineBuffer.length() > 256) lineBuffer = "";
-  }
+  pumpSerial();
 }

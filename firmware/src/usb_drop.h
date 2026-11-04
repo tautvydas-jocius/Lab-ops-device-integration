@@ -25,7 +25,11 @@ static Sent sent[24]; static int nSent = 0;
 static void put16(uint8_t *p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
 static void put32(uint8_t *p, uint32_t v) { put16(p, v); put16(p + 2, v >> 16); }
 static uint32_t crc32(const uint8_t *d, size_t n, uint32_t c = 0xFFFFFFFF) {
-  while (n--) { c ^= *d++; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & -(c & 1)); } return ~c;
+  while (n--) {
+    if (!(n & 0x3FFF)) pumpSerial();  // keep draining the UART during the ~0.4 s a 4 MB pass takes
+    c ^= *d++; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & -(c & 1));
+  }
+  return ~c;
 }
 static void formatDisk() {  // FAT12, 2 FATs, 512 root entries; cluster size picked so clusters <= 4084
   memset(disk, 0, totalSectors * SECTOR);
@@ -89,12 +93,13 @@ static int upload(const String &name, const uint8_t *data, uint32_t size) {
   if (!mqtt.publish((base + "/meta").c_str(), meta.c_str())) return 0;
   for (uint32_t c = 0; c < chunks; c++) {
     if (!mqtt.publish((base + "/" + String(c)).c_str(), data + c * CH, min(CH, size - c * CH))) return 0;
-    mqtt.loop(); delay(3);  // pace so the broker/socket is not flooded
+    mqtt.loop(); pumpSerial(); delay(3);  // pace so the broker/socket is not flooded; keep serving the balance
   }
-  for (uint32_t t = millis(); millis() - t < 15000;) { mqtt.loop(); if (ackXfer == xfer) return ackState; delay(10); }
+  for (uint32_t t = millis(); millis() - t < 15000;) { mqtt.loop(); if (ackXfer == xfer) return ackState; pumpSerial(); delay(10); }
   return 0;
 }
 static void scanRoot() {
+  uint32_t w0 = lastWriteMs;  // the host may start writing again mid-scan: then what we read can be torn, so do not mark it sent
   const uint8_t *root = disk + (1 + 2 * fatSectors) * SECTOR; char lfn[256]; bool haveLfn = false; memset(lfn, 0, sizeof(lfn));
   for (int i = 0; i < 512; i++) {
     const uint8_t *e = root + i * 32;
@@ -116,7 +121,8 @@ static void scanRoot() {
     uint32_t crc = crc32(data, size);
     if (!alreadySent(name, size, crc) && WiFi.status() == WL_CONNECTED) {
       int r = upload(name, data, size);
-      if (r) { markSent(name, size, crc); if (r == 2) Serial.printf("drop rejected by server: %s\n", name.c_str()); }
+      if (r && lastWriteMs != w0) { dirty = true; }  // torn read suspected: leave unsent, rescan after the next idle window
+      else if (r) { markSent(name, size, crc); if (r == 2) Serial.printf("drop rejected by server: %s\n", name.c_str()); }
       else { Serial.printf("drop upload failed: %s\n", name.c_str()); dirty = true; lastWriteMs = millis(); }  // retry after another idle window
     }
     free(data);
