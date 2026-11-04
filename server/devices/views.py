@@ -1,12 +1,21 @@
-import json
+import hmac, json
+from datetime import timedelta
 from django.conf import settings
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, Http404
 from django.shortcuts import render
-from .models import Device, Reading, ParserSchema
-from .mqtt import config_payload
+from .models import Device, DeviceCommand, Reading, ParserSchema
+from .mqtt import config_payload, send_command
+
+def is_stalled(d):
+    # enabled device marked online but silent for > max(5 poll intervals, 30 s)
+    if not (d.enabled and d.online and d.last_seen): return False
+    return timezone.now() - d.last_seen > timedelta(seconds=max(5 * d.poll_interval_ms / 1000, 30))
 
 def device_json(d):
     return {
+        "stalled": is_stalled(d),
         "device_id": d.device_id,
         "name": d.name,
         "device_type": d.device_type,
@@ -165,3 +174,21 @@ def dashboard(request):
         "overview": overview_data,
         "overview_json": json.dumps(overview_data),
     })
+
+def cmd_json(c): return {"id": c.pk, "action": c.action, "arg": c.arg, "status": c.status, "result": c.result, "created_at": c.created_at, "acked_at": c.acked_at}
+
+@csrf_exempt
+def actions(request, device_id):
+    # Bearer-token auth; disabled (403) when CONTROL_API_TOKEN is unset
+    supplied = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not settings.CONTROL_API_TOKEN or not hmac.compare_digest(supplied, settings.CONTROL_API_TOKEN):
+        return JsonResponse({"error": "unauthorized"}, status=401 if settings.CONTROL_API_TOKEN else 403)
+    try: d = Device.objects.get(device_id=device_id)
+    except Device.DoesNotExist: raise Http404
+    if request.method == "GET": return JsonResponse({"commands": [cmd_json(c) for c in d.commands.all()[:50]]})
+    if request.method != "POST": return JsonResponse({"error": "method not allowed"}, status=405)
+    try: body = json.loads(request.body or b"{}")
+    except ValueError: return JsonResponse({"error": "bad JSON"}, status=400)
+    action = body.get("action")
+    if action not in dict(DeviceCommand.ACTIONS): return JsonResponse({"error": "unknown action", "allowed": [a for a, _ in DeviceCommand.ACTIONS]}, status=400)
+    return JsonResponse(cmd_json(send_command(d, action, str(body.get("arg", ""))[:200], by="api")), status=202)

@@ -50,3 +50,37 @@ class DeviceIntegrationTests(TestCase):
         self.assertEqual(data["stats"]["total_devices"], 1)
         self.assertEqual(data["devices"][0]["device_id"], "bal-test")
         self.assertEqual(data["devices"][0]["latest_reading"]["value"], "12.345600")
+
+    def test_bad_pattern_does_not_raise(self):
+        bad = ParserSchema.objects.create(name="bad", version=1, pattern="(")
+        self.assertFalse(parse("x", bad)["ok"])
+    def test_stalled_flag(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from .views import is_stalled
+        d = Device.objects.create(device_id="s1", name="S", parser=self.mt, online=True, last_seen=timezone.now())
+        self.assertFalse(is_stalled(d))
+        d.last_seen = timezone.now() - timedelta(minutes=5)
+        self.assertTrue(is_stalled(d))
+
+    @patch("devices.mqtt.publish.single")
+    def test_command_is_signed(self, single):
+        import json
+        from .mqtt import send_command, sign
+        d = Device.objects.create(device_id="c1", name="C", parser=self.mt)
+        cmd = send_command(d, "ping", "", "t")
+        body = json.loads(single.call_args.args[1])
+        self.assertEqual(body["sig"], sign(d.command_token, cmd.pk, "ping", ""))
+        self.assertNotIn(d.command_token, single.call_args.args[1])
+    @patch("devices.mqtt.publish.single")
+    def test_actions_api_token(self, single):
+        d = Device.objects.create(device_id="c2", name="C", parser=self.mt)
+        url = "/api/devices/c2/actions/"
+        with override_settings(CONTROL_API_TOKEN=""):
+            self.assertEqual(self.client.post(url, "{}", content_type="application/json").status_code, 403)
+        with override_settings(CONTROL_API_TOKEN="s3cret"):
+            self.assertEqual(self.client.post(url, "{}", content_type="application/json", headers={"Authorization": "Bearer nope"}).status_code, 401)
+            ok = {"Authorization": "Bearer s3cret"}
+            self.assertEqual(self.client.post(url, '{"action":"bogus"}', content_type="application/json", headers=ok).status_code, 400)
+            self.assertEqual(self.client.post(url, '{"action":"ping"}', content_type="application/json", headers=ok).status_code, 202)
+        self.assertEqual(d.commands.count(), 1)

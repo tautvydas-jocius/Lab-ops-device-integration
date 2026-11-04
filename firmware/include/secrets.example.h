@@ -4,3 +4,5 @@
 #define MQTT_HOST "192.168.1.10"
 #define MQTT_PORT 1883
 #define DEVICE_ID "bal-01"
+// Per-device secret from Django admin (Device -> command token). Commands are HMAC-signed with it.
+#define COMMAND_TOKEN "paste-token-from-admin"

@@ -1,7 +1,9 @@
-import logging
+import logging, secrets
 from django.core.exceptions import ValidationError
 from django.db import models
 log = logging.getLogger(__name__)
+
+def new_token(): return secrets.token_hex(24)
 
 class ParserSchema(models.Model):
     RULES = [("equals", "equals"), ("present", "present"), ("absent", "absent")]
@@ -44,6 +46,7 @@ class Device(models.Model):
     applied_config_version = models.PositiveIntegerField(null=True, blank=True)
     online = models.BooleanField(default=False)
     last_seen = models.DateTimeField(null=True, blank=True)
+    command_token = models.CharField(max_length=64, default=new_token, editable=False, help_text="Shared secret; put in firmware secrets.h as COMMAND_TOKEN. Never sent over MQTT, only used to HMAC-sign commands.")
     created_at = models.DateTimeField(auto_now_add=True)
     CONFIG_FIELDS = ("baud", "data_bits", "parity", "stop_bits", "terminator", "poll_command", "poll_interval_ms", "enabled", "parser")
     def __str__(self): return f"{self.device_id} — {self.name}"
@@ -75,3 +78,18 @@ class Reading(models.Model):
         indexes = [models.Index(fields=["device", "received_at"], name="reading_dev_received_idx")]
         ordering = ["-received_at"]
     def __str__(self): return f"{self.device.device_id} {self.received_at}"
+
+
+class DeviceCommand(models.Model):
+    ACTIONS = [("ping", "Ping"), ("poll_now", "Poll now"), ("send_serial", "Send serial text"), ("reboot", "Reboot MCU")]
+    STATUS = [("pending", "pending"), ("ok", "ok"), ("failed", "failed")]
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="commands")
+    action = models.CharField(max_length=20, choices=ACTIONS)
+    arg = models.CharField(max_length=200, blank=True, help_text="send_serial: text written to the instrument (terminator is NOT added)")
+    status = models.CharField(max_length=10, choices=STATUS, default="pending")
+    result = models.TextField(blank=True)
+    created_by = models.CharField(max_length=150, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    acked_at = models.DateTimeField(null=True, blank=True)
+    class Meta: ordering = ["-id"]
+    def __str__(self): return f"{self.device.device_id} {self.action} #{self.pk}"

@@ -22,5 +22,7 @@ def parse(line, schema):
             elif schema.stable_rule == "present": stable = bool(marker)
             else: stable = not bool(marker)
         return {"ok": True, "value": value, "unit": unit, "stable": stable, "fields": groups, "error": ""}
+    except re.error as exc:
+        return {"ok": False, "value": None, "unit": "", "stable": None, "fields": {}, "error": f"invalid parser pattern: {exc}"}
     except (InvalidOperation, ValueError) as exc:
         return {"ok": False, "value": None, "unit": "", "stable": None, "fields": {}, "error": f"invalid decimal value: {exc}"}

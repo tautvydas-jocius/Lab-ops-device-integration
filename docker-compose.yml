@@ -37,6 +37,7 @@ services:
       MQTT_PREFIX: lab/devices
       DEBUG: "0"
       SECRET_KEY: ${SECRET_KEY:-local-dev-change-me}
+      CONTROL_API_TOKEN: ${CONTROL_API_TOKEN:-}
     ports:
       - "127.0.0.1:8011:8000"
     depends_on:

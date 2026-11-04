@@ -3,6 +3,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <mbedtls/md.h>
 #include "secrets.h"
 
 #define UART_RX 18
@@ -12,7 +13,8 @@ static const char *PREFIX = "lab/devices";
 WiFiClient network;
 PubSubClient mqtt(network);
 Preferences prefs;
-String rawTopic, configTopic, statusTopic;
+String rawTopic, configTopic, statusTopic, cmdTopic, ackTopic;
+uint32_t lastCmdId = 0;
 uint32_t configVersion = 0, baud = 9600, intervalMs = 1000, lastPoll = 0, seqNo = 0;
 uint8_t dataBits = 8, stopBits = 1;
 char parity = 'N';
@@ -45,8 +47,32 @@ void loadConfig() {
   parity = prefs.getChar("parity", 'N'); terminator = prefs.getString("term", "\r\n"); pollCommand = prefs.getString("poll", ""); enabled = prefs.getBool("enabled", true); prefs.end();
   applySerial();
 }
+// HMAC-SHA256(COMMAND_TOKEN, "id|action|arg") as lowercase hex; matches server mqtt.sign()
+String hmacHex(const String &msg) {
+  uint8_t out[32]; mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), (const uint8_t *)COMMAND_TOKEN, strlen(COMMAND_TOKEN), (const uint8_t *)msg.c_str(), msg.length(), out);
+  String hex; char b[3]; for (int i = 0; i < 32; i++) { snprintf(b, 3, "%02x", out[i]); hex += b; } return hex;
+}
+bool sameString(const String &a, const String &b) {  // constant-time
+  if (a.length() != b.length()) return false; uint8_t d = 0; for (size_t i = 0; i < a.length(); i++) d |= a[i] ^ b[i]; return d == 0;
+}
+void ack(uint32_t id, bool ok, const String &result) {
+  JsonDocument doc; doc["id"] = id; doc["ok"] = ok; doc["result"] = result;
+  String payload; serializeJson(doc, payload); mqtt.publish(ackTopic.c_str(), payload.c_str());
+}
+void onCommand(byte *payload, unsigned int length) {
+  JsonDocument doc; if (deserializeJson(doc, payload, length)) return;
+  uint32_t id = doc["id"] | 0; String action = doc["action"] | "", arg = doc["arg"] | "", sig = doc["sig"] | "";
+  if (!sameString(hmacHex(String(id) + "|" + action + "|" + arg), sig)) return;  // bad token: drop silently, no oracle
+  if (id <= lastCmdId) { ack(id, false, "replayed or stale id"); return; }
+  lastCmdId = id; prefs.begin("scale", false); prefs.putUInt("cmdid", id); prefs.end();
+  if (action == "ping") ack(id, true, String("pong fw=" FW_VERSION " up=") + millis() / 1000 + "s rssi=" + WiFi.RSSI());
+  else if (action == "poll_now") { if (pollCommand.length()) { Serial1.print(pollCommand); ack(id, true, "polled"); } else ack(id, false, "no poll_command configured"); }
+  else if (action == "send_serial") { Serial1.print(arg); ack(id, true, "sent " + String(arg.length()) + " bytes"); }
+  else if (action == "reboot") { ack(id, true, "rebooting"); mqtt.loop(); delay(200); ESP.restart(); }
+  else ack(id, false, "unknown action");
+}
 void onMessage(char *topic, byte *payload, unsigned int length) {
-  String t(topic); if (t != configTopic) return;
+  String t(topic); if (t == cmdTopic) { onCommand(payload, length); return; } if (t != configTopic) return;
   JsonDocument doc; if (deserializeJson(doc, payload, length)) return;
   configVersion = doc["config_version"] | configVersion; enabled = doc["enabled"] | enabled;
   baud = doc["baud"] | baud; dataBits = doc["data_bits"] | dataBits; stopBits = doc["stop_bits"] | stopBits;
@@ -58,12 +84,13 @@ void connectWifi() { if (WiFi.status() == WL_CONNECTED) return; WiFi.mode(WIFI_S
 void connectMqtt() {
   while (!mqtt.connected()) {
     String will = "{\"state\":\"offline\",\"config_version\":" + String(configVersion) + ",\"fw\":\"" FW_VERSION "\"}";
-    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); publishStatus("online"); }
+    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); publishStatus("online"); }
     else delay(2000);
   }
 }
 void setup() {
-  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status";
+  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack";
+  prefs.begin("scale", true); lastCmdId = prefs.getUInt("cmdid", 0); prefs.end();
   loadConfig(); WiFi.mode(WIFI_STA); WiFi.begin(WIFI_SSID, WIFI_PASS); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(512);
 }
 void loop() {

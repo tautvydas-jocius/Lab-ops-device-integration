@@ -29,3 +29,4 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 MQTT_HOST = os.getenv("MQTT_HOST", "mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_PREFIX = os.getenv("MQTT_PREFIX", "lab/devices").strip("/")
+CONTROL_API_TOKEN = os.getenv("CONTROL_API_TOKEN", "")

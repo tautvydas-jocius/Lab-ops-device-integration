@@ -3,7 +3,7 @@ import paho.mqtt.client as mqtt
 from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from devices.models import Device, ParserSchema, Reading
+from devices.models import Device, DeviceCommand, ParserSchema, Reading
 from devices.parsing import parse
 from devices.mqtt import publish_config
 log = logging.getLogger(__name__)
@@ -12,17 +12,21 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         def on_connect(client, userdata, flags, reason_code, properties):
-            client.subscribe([(f"{settings.MQTT_PREFIX}/+/raw", 0), (f"{settings.MQTT_PREFIX}/+/status", 0)])
+            client.subscribe([(f"{settings.MQTT_PREFIX}/+/raw", 0), (f"{settings.MQTT_PREFIX}/+/status", 0), (f"{settings.MQTT_PREFIX}/+/ack", 1)])
             for d in Device.objects.all():
                 try: publish_config(d)
                 except Exception as e: log.warning("republish failed %s: %s", d.device_id, e)
         def on_message(client, userdata, msg):
-            match = re.match(rf"^{re.escape(settings.MQTT_PREFIX)}/([^/]+)/(raw|status)$", msg.topic)
+            match = re.match(rf"^{re.escape(settings.MQTT_PREFIX)}/([^/]+)/(raw|status|ack)$", msg.topic)
             if not match: return
             ident, kind = match.groups()
             try: payload = json.loads(msg.payload.decode())
             except Exception: log.warning("bad JSON on %s", msg.topic); return
             device = Device.objects.select_related("parser").filter(device_id=ident).first()
+            if kind == "ack":
+                ok = bool(payload.get("ok"))
+                DeviceCommand.objects.filter(pk=payload.get("id"), device__device_id=ident, status="pending").update(status="ok" if ok else "failed", result=str(payload.get("result", ""))[:1000], acked_at=timezone.now())
+                return
             if kind == "status":
                 if not device:
                     parser = ParserSchema.objects.first()
