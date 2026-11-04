@@ -35,7 +35,7 @@ Notes and cautions:
 
 Captured from a live run: the Django stack (broker, Postgres, web, `mqtt_listener`) and `simulator/esp_emulator.py` (a Python emulation of the firmware protocol, not the C++ firmware) side by side in two Rex panes, driven by `simulator/e2e.py`. Fault events in the diagnostics screenshots (brownout, panic, power loss) were injected into the emulator.
 
-**Server dashboard**: three balances, live weights, a per-reading stable/dynamic flag as reported by the balance, parser schema and config version per device. The KPI row's "Parse Success" is the share of lines that matched their parser schema (it replaced a misleading "GMP stability compliance" figure).
+**Server dashboard**: live values with each line marked parsed or not parsed (nothing more is claimed about the measurement), parser schema and config version per device. The two "not parsed" cards are real: the test sent Mettler-format lines to devices configured for other schemas.
 
 ![Server dashboard](docs/screenshots/server-dashboard.png)
 
