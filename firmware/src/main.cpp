@@ -19,6 +19,8 @@
 #ifndef FW_VERSION
 #define FW_VERSION "1.0.0"  // bump (or -DFW_VERSION=\"x\") per build; Django shows it per device
 #endif
+// Embedded so Django can read the version straight out of firmware.bin when it is uploaded (auto-versioning)
+extern const char FW_MARKER[] __attribute__((used)) = "LABOPS_FW=" FW_VERSION;
 static const char *PREFIX = "lab/devices";
 WiFiClient network;
 PubSubClient mqtt(network);
@@ -122,7 +124,7 @@ void onCommand(byte *payload, unsigned int length) {
 // Pulls the signed image 4 KB at a time over MQTT (stop-and-wait: request index n, wait for ota/<image>/<n>), streams it to the
 // inactive OTA partition while hashing, and only switches boot partition if the SHA-256 matches the signed command.
 void otaRun() {
-  otaPending = false; uint32_t chunks = (otaSize + 4095) / 4096; mbedtls_md_context_t ctx; mbedtls_md_init(&ctx);
+  otaPending = false; uint32_t t0 = millis(), chunks = (otaSize + 4095) / 4096; mbedtls_md_context_t ctx; mbedtls_md_init(&ctx);
   auto fail = [&](const String &why) { Update.abort(); mbedtls_md_free(&ctx); ack(otaCmdId, false, why); };
   if (!Update.begin(otaSize)) { ack(otaCmdId, false, String("no room / bad size: ") + Update.errorString()); mbedtls_md_free(&ctx); return; }
   mbedtls_md_setup(&ctx, mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), 0); mbedtls_md_starts(&ctx);
@@ -141,7 +143,7 @@ void otaRun() {
   uint8_t h[32]; mbedtls_md_finish(&ctx, h); mbedtls_md_free(&ctx); String hex; char b[3]; for (int i = 0; i < 32; i++) { snprintf(b, 3, "%02x", h[i]); hex += b; }
   if (hex != otaSha) { Update.abort(); ack(otaCmdId, false, "sha256 mismatch, image discarded"); return; }
   if (!Update.end(true)) { ack(otaCmdId, false, String("finalize failed: ") + Update.errorString()); return; }
-  ack(otaCmdId, true, "flashed v" + otaVersion + ", rebooting"); mqtt.loop(); delay(300); ESP.restart();
+  float secs = (millis() - t0) / 1000.0f; ack(otaCmdId, true, "flashed v" + otaVersion + " in " + String(secs, 1) + "s (" + String(otaSize / 1024.0f / secs, 1) + " KB/s), rebooting"); mqtt.loop(); delay(300); ESP.restart();
 }
 void onMessage(char *topic, byte *payload, unsigned int length) {
   String t(topic);

@@ -137,3 +137,17 @@ class DeviceIntegrationTests(TestCase):
             publish_ota_chunk(C(), "o1", img.pk, 2); publish_ota_chunk(C(), "o1", img.pk, 3)
             self.assertEqual(sent, [(f"lab/devices/o1/ota/{img.pk}/2", 1808), (f"lab/devices/o1/ota/{img.pk}/3", 0)])
         self.assertEqual(send_command(d, "ota", "999", "t").status, "failed")
+
+    def test_firmware_autoversion_and_lookup(self):
+        import tempfile
+        from django.core.files.base import ContentFile
+        from .models import FirmwareImage
+        with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp):
+            def up(data, version=""):
+                i = FirmwareImage(version=version); i.file.save("f.bin", ContentFile(data), save=False); i.save(); return i
+            a = up(b"\xe9junk\x00LABOPS_FW=1.2.0\x00more" * 3)
+            b = up(b"no marker here")
+            c = up(b"x", version="2.0.0-rc1")
+            self.assertEqual(a.version, "1.2.0"); self.assertTrue(b.version.startswith("auto-")); self.assertEqual(c.version, "2.0.0-rc1")
+            self.assertEqual(FirmwareImage.find("v1.2.0"), a); self.assertEqual(FirmwareImage.find("1.2.0"), a)
+            self.assertEqual(FirmwareImage.find(str(b.pk)), b); self.assertEqual(FirmwareImage.find(""), c); self.assertIsNone(FirmwareImage.find("9.9"))

@@ -22,7 +22,7 @@ def send_command(device, action, arg="", by=""):
     stored = arg
     if action == "ota":  # arg is an image id (blank = newest); the signed command carries version, size and sha256
         from .models import FirmwareImage
-        img = FirmwareImage.objects.filter(pk=arg).first() if arg.strip().isdigit() else FirmwareImage.objects.first()
+        img = FirmwareImage.find(arg)
         if not img:
             return DeviceCommand.objects.create(device=device, action=action, arg=arg, status="failed", result="no such firmware image", created_by=by)
         arg = json.dumps({"image": img.pk, "version": img.version, "size": img.size, "sha256": img.sha256}); stored = f"image {img.pk} v{img.version}"

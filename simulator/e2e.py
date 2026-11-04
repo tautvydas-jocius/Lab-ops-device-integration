@@ -34,6 +34,12 @@ time.sleep(3); r = run("ping"); check("MCU back after ota reboot", r["status"] =
 check("django shows new fw_version", dj("from devices.models import Device; print(Device.objects.get(device_id='bal-01').fw_version)") == "9.9.9")
 dj(f"from devices.models import FirmwareImage as F; F.objects.filter(pk={img}).update(sha256='0'*64)")  # corrupt hash => MCU must refuse
 r = run("ota", img, wait=30); check("ota with wrong sha256 refused", r["status"] == "failed", r["result"])
+# OTA by version string; version auto-read from the binary's LABOPS_FW marker (blank version on upload)
+dj("from django.core.files.base import ContentFile as C; from devices.models import FirmwareImage as F; F.objects.filter(version='2.3.4').delete(); import os; i=F(); i.file.save('fw.bin', C(os.urandom(9000)+b'LABOPS_FW=2.3.4\\x00'+os.urandom(9000)), save=False); i.save()")
+r = run("ota", "v2.3.4", wait=30); check("ota by version 'v2.3.4' (auto-versioned from binary)", r["status"] == "ok", r["result"])
+time.sleep(3); check("device now reports 2.3.4", dj("from devices.models import Device; print(Device.objects.get(device_id='bal-01').fw_version)") == "2.3.4")
+r = run("ota", "v0.0.1", wait=5); check("unknown version refused", r["status"] == "failed", r["result"])
+fw = call("/firmware/")[1]["firmware"]; check("firmware browse API lists versions", {"2.3.4", "9.9.9"} <= {f["version"] for f in fw}, [f["version"] for f in fw])
 time.sleep(1)
 files = call(f"/devices/{DEV}/files/list/")[1]["files"]; names = {f["name"] for f in files}
 check("csv (UTF-16, NULs) stored", "readings_utf16.csv" in names)

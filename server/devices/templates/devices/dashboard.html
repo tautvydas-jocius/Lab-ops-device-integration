@@ -141,13 +141,13 @@
         <div class="display-box">
           <div class="display-main-row">
             <div class="display-weight-wrap">
-              <span class="display-weight {% if d.latest_reading.stable %}stable{% elif d.latest_reading.stable == False %}dynamic{% endif %}">
+              <span class="display-weight {% if d.latest_reading.ok %}stable{% endif %}">
                 {% if d.latest_reading and d.latest_reading.value != None %}{{ d.latest_reading.value }}{% else %}--.----{% endif %}
               </span>
               <span class="display-unit">{% if d.latest_reading and d.latest_reading.unit %}{{ d.latest_reading.unit }}{% else %}g{% endif %}</span>
             </div>
-            <span class="stability-pill {% if d.latest_reading.stable %}stable{% elif d.latest_reading.stable == False %}dynamic{% else %}none{% endif %}">
-              {% if d.latest_reading.stable %}● STABLE{% elif d.latest_reading.stable == False %}▲ DYNAMIC{% else %}NO DATA{% endif %}
+            <span class="stability-pill {% if d.latest_reading.ok %}stable{% else %}none{% endif %}">
+              {% if not d.latest_reading %}NO DATA{% elif d.latest_reading.ok %}● PARSED{% else %}NOT PARSED{% endif %}
             </span>
           </div>
           <div class="sparkline-container">
@@ -229,12 +229,11 @@
             <tr>
               <th>Time</th>
               <th>Device</th>
-              <th>Weight Value</th>
-              <th>Stability</th>
+              <th>Value</th>
               <th>Traceable Parser</th>
               <th>Seq</th>
               <th>Raw RS232 Line</th>
-              <th>Validation</th>
+              <th>Parsed</th>
             </tr>
           </thead>
           <tbody id="audit-table-body">
@@ -245,34 +244,23 @@
                 <strong style="color: var(--text-bright);">{{ r.device_id }}</strong>
                 <span style="color: var(--text-muted); font-size: 0.75rem;"> {{ r.device_name }}</span>
               </td>
-              <td class="table-val {% if r.stable %}stable{% elif r.stable == False %}dynamic{% endif %}">
+              <td class="table-val">
                 {{ r.value|default:"--" }} <small style="font-weight: normal; color: var(--text-muted);">{{ r.unit }}</small>
-              </td>
-              <td>
-                {% if not r.ok %}
-                <span class="stability-pill error" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">ERROR</span>
-                {% elif r.stable %}
-                <span class="stability-pill stable" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">● STABLE</span>
-                {% elif r.stable == False %}
-                <span class="stability-pill dynamic" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">▲ DYNAMIC</span>
-                {% else %}
-                <span class="stability-pill none" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">--</span>
-                {% endif %}
               </td>
               <td><span class="schema-badge">{{ r.parser|default:"None" }}</span></td>
               <td style="font-family: var(--font-mono); color: var(--text-muted);">#{{ r.seq|default:"--" }}</td>
               <td><span class="table-raw" title="{{ r.raw_line }}">{{ r.raw_line }}</span></td>
               <td>
                 {% if r.ok %}
-                <span style="color: var(--color-stable); font-size: 0.75rem; font-weight:600;">✓ VALID</span>
+                <span style="color: var(--color-stable); font-size: 0.75rem; font-weight:600;">✓ Parsed</span>
                 {% else %}
-                <span style="color: var(--color-error); font-size: 0.75rem; font-weight:600;" title="{{ r.error }}">✕ INVALID</span>
+                <span style="color: var(--text-muted); font-size: 0.75rem;" title="{{ r.error }}">Not parsed</span>
                 {% endif %}
               </td>
             </tr>
             {% empty %}
             <tr>
-              <td colspan="8" style="text-align:center; padding: 2.5rem; color: var(--text-muted);">No readings logged yet.</td>
+              <td colspan="7" style="text-align:center; padding: 2.5rem; color: var(--text-muted);">No readings logged yet.</td>
             </tr>
             {% endfor %}
           </tbody>

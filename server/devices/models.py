@@ -94,6 +94,10 @@ class DeviceCommand(models.Model):
     acked_at = models.DateTimeField(null=True, blank=True)
     class Meta: ordering = ["-id"]
     def __str__(self): return f"{self.device.device_id} {self.action} #{self.pk}"
+    @property
+    def took(self):
+        """Seconds from the command being created to the MCU's ack (for OTA this is the whole transfer + flash)."""
+        return round((self.acked_at - self.created_at).total_seconds(), 2) if self.acked_at else None
 
 
 class UploadedFile(models.Model):
@@ -108,7 +112,7 @@ class UploadedFile(models.Model):
 
 
 class FirmwareImage(models.Model):
-    version = models.CharField(max_length=40, unique=True)
+    version = models.CharField(max_length=40, unique=True, blank=True, help_text="Leave blank: read from the binary's LABOPS_FW marker (set by FW_VERSION at build time), else auto-numbered")
     file = models.FileField(upload_to="firmware/", help_text="PlatformIO build output: .pio/build/<env>/firmware.bin")
     size = models.PositiveIntegerField(editable=False, default=0)
     sha256 = models.CharField(max_length=64, editable=False, blank=True)
@@ -116,10 +120,21 @@ class FirmwareImage(models.Model):
     uploaded_at = models.DateTimeField(auto_now_add=True)
     class Meta: ordering = ["-id"]
     def __str__(self): return f"firmware {self.version}"
+    @classmethod
+    def find(cls, ref):
+        """Resolve an id, a version (\"1.2.0\" or \"v1.2.0\"), or blank (= newest)."""
+        ref = (ref or "").strip()
+        if not ref: return cls.objects.first()
+        return cls.objects.filter(version__in=[ref, ref.lstrip("vV"), "v" + ref.lstrip("vV")]).first() or (cls.objects.filter(pk=ref).first() if ref.isdigit() else None)
     def save(self, *args, **kwargs):
         if not self.sha256:  # computed once; images are immutable once stored
-            import hashlib
-            h = hashlib.sha256(); self.file.open("rb")
-            for chunk in self.file.chunks(): h.update(chunk)
+            import hashlib, re
+            h = hashlib.sha256(); self.file.open("rb"); found = None
+            for chunk in self.file.chunks():
+                h.update(chunk)
+                if not found: found = re.search(rb"LABOPS_FW=([A-Za-z0-9._+-]{1,40})", chunk)  # marker embedded by firmware/src/main.cpp (ponytail: a marker split across a 64 KB chunk edge is missed; falls back to auto-number)
             self.file.seek(0); self.sha256, self.size = h.hexdigest(), self.file.size
+            if not self.version:
+                from django.utils import timezone
+                self.version = found.group(1).decode() if found else f"auto-{timezone.now():%Y%m%d}.{FirmwareImage.objects.count() + 1}"
         super().save(*args, **kwargs)

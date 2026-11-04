@@ -86,20 +86,10 @@
     let stabilityLabel = 'NO DATA';
     let valClass = '';
 
+    // We only know whether the line matched the parser schema, not whether the measurement is valid.
     if (latest) {
-      if (!latest.ok) {
-        stabilityClass = 'error';
-        stabilityLabel = 'PARSE ERR';
-        valClass = 'error';
-      } else if (latest.stable === true) {
-        stabilityClass = 'stable';
-        stabilityLabel = 'STABLE';
-        valClass = 'stable';
-      } else if (latest.stable === false) {
-        stabilityClass = 'dynamic';
-        stabilityLabel = 'DYNAMIC';
-        valClass = 'dynamic';
-      }
+      if (latest.ok) { stabilityClass = 'stable'; stabilityLabel = 'PARSED'; valClass = 'stable'; }
+      else { stabilityClass = 'none'; stabilityLabel = 'NOT PARSED'; }
     }
 
     // Sparkline from recent_values
@@ -144,7 +134,7 @@
             <span class="display-unit">${unitText}</span>
           </div>
           <span class="stability-pill ${stabilityClass}">
-            ${stabilityClass === 'stable' ? '●' : (stabilityClass === 'dynamic' ? '▲' : '✕')} ${stabilityLabel}
+            ${stabilityClass === 'stable' ? '●' : ''} ${stabilityLabel}
           </span>
         </div>
         ${sparklineHtml}
@@ -222,7 +212,7 @@
     tbody.innerHTML = '';
 
     if (items.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding: 2.5rem; color: var(--text-muted);">No readings match current filter criteria.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 2.5rem; color: var(--text-muted);">No readings match current filter criteria.</td></tr>`;
       return;
     }
 
@@ -235,34 +225,20 @@
       }
 
       const formattedVal = r.value !== null ? parseFloat(r.value).toFixed(4) : '--';
-      const valClass = r.stable === true ? 'stable' : (r.stable === false ? 'dynamic' : '');
-
-      let stabilityHtml = '';
-      if (!r.ok) {
-        stabilityHtml = '<span class="stability-pill error" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">ERROR</span>';
-      } else if (r.stable === true) {
-        stabilityHtml = '<span class="stability-pill stable" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">● STABLE</span>';
-      } else if (r.stable === false) {
-        stabilityHtml = '<span class="stability-pill dynamic" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">▲ DYNAMIC</span>';
-      } else {
-        stabilityHtml = '<span class="stability-pill none" style="padding: 0.2rem 0.5rem; font-size: 0.7rem;">--</span>';
-      }
-
       tr.innerHTML = `
         <td class="table-time">${formatDate(r.received_at)}</td>
         <td>
           <strong style="color: var(--text-bright);">${escapeHtml(r.device_id)}</strong>
           <span style="color: var(--text-muted); font-size: 0.75rem;"> ${escapeHtml(r.device_name || '')}</span>
         </td>
-        <td class="table-val ${valClass}">${formattedVal} <small style="font-weight: normal; color: var(--text-muted);">${escapeHtml(r.unit || '')}</small></td>
-        <td>${stabilityHtml}</td>
+        <td class="table-val">${formattedVal} <small style="font-weight: normal; color: var(--text-muted);">${escapeHtml(r.unit || '')}</small></td>
         <td><span class="schema-badge">${escapeHtml(r.parser || 'None')}</span></td>
         <td style="font-family: var(--font-mono); color: var(--text-muted);">#${r.seq ?? '--'}</td>
         <td><span class="table-raw" title="${escapeAttr(r.raw_line || '')}">${escapeHtml(r.raw_line || '')}</span></td>
         <td>
           ${r.ok 
-            ? '<span style="color: var(--color-stable); font-size: 0.75rem; font-weight:600;">✓ VALID</span>' 
-            : `<span style="color: var(--color-error); font-size: 0.75rem; font-weight:600;" title="${escapeAttr(r.error || '')}">✕ INVALID</span>`}
+            ? '<span style="color: var(--color-stable); font-size: 0.75rem; font-weight:600;">✓ Parsed</span>' 
+            : `<span style="color: var(--text-muted); font-size: 0.75rem;" title="${escapeAttr(r.error || '')}">Not parsed</span>`}
         </td>
       `;
 

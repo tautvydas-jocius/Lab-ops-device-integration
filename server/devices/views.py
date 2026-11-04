@@ -8,7 +8,7 @@ from django.shortcuts import render
 from django.core.files.base import ContentFile
 from django.http import FileResponse
 from django.utils.text import get_valid_filename
-from .models import UploadedFile, Device, DeviceCommand, Reading, ParserSchema
+from .models import FirmwareImage, UploadedFile, Device, DeviceCommand, Reading, ParserSchema
 from .mqtt import config_payload, send_command
 
 def is_stalled(d):
@@ -178,7 +178,7 @@ def dashboard(request):
         "overview_json": json.dumps(overview_data),
     })
 
-def cmd_json(c): return {"id": c.pk, "action": c.action, "arg": c.arg, "status": c.status, "result": c.result, "created_at": c.created_at, "acked_at": c.acked_at}
+def cmd_json(c): return {"id": c.pk, "action": c.action, "arg": c.arg, "status": c.status, "result": c.result, "took_s": c.took, "created_at": c.created_at, "acked_at": c.acked_at}
 
 @csrf_exempt
 def actions(request, device_id):
@@ -208,3 +208,13 @@ def file_download(request, pk):
     try: f = UploadedFile.objects.get(pk=pk)
     except UploadedFile.DoesNotExist: raise Http404
     return FileResponse(f.file.open("rb"), as_attachment=True, filename=f.name)
+
+def firmware_list(request):
+    if not settings.CONTROL_API_TOKEN or not hmac.compare_digest(bearer(request), settings.CONTROL_API_TOKEN): return JsonResponse({"error": "unauthorized"}, status=401)
+    return JsonResponse({"firmware": [{"id": f.pk, "version": f.version, "size": f.size, "sha256": f.sha256, "uploaded_at": f.uploaded_at, "notes": f.notes, "download": f"/api/firmware/{f.pk}/"} for f in FirmwareImage.objects.all()]})
+
+def firmware_download(request, pk):
+    if not settings.CONTROL_API_TOKEN or not hmac.compare_digest(bearer(request), settings.CONTROL_API_TOKEN): return JsonResponse({"error": "unauthorized"}, status=401)
+    try: f = FirmwareImage.objects.get(pk=pk)
+    except FirmwareImage.DoesNotExist: raise Http404
+    return FileResponse(f.file.open("rb"), as_attachment=True, filename=f"firmware-{f.version}.bin")

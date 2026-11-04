@@ -94,7 +94,7 @@ class Mcu:
         """Mirrors firmware otaRun(): pull 4 KB chunks over MQTT, hash while 'writing', switch version only if SHA-256 matches the signed arg."""
         try: o = json.loads(arg); img, size, ver, sha = int(o["image"]), int(o["size"]), o["version"], o["sha256"]; assert size and len(sha) == 64
         except Exception: return self.ack(id_, False, "ota arg needs image, size, sha256")
-        h = hashlib.sha256(); chunks = (size + 4095) // 4096; log(f"OTA start image={img} v{ver} {size} B in {chunks} chunks")
+        t0 = time.monotonic(); h = hashlib.sha256(); chunks = (size + 4095) // 4096; log(f"OTA start image={img} v{ver} {size} B in {chunks} chunks")
         for i in range(chunks):
             for attempt in range(4):
                 self.ota_evt.clear(); self.client.publish(T("ota_req"), json.dumps({"image": img, "index": i}))
@@ -104,7 +104,7 @@ class Mcu:
             if len(data) != min(4096, size - i * 4096): return self.ack(id_, False, f"ota chunk {i} has wrong length")
             h.update(data)
         if h.hexdigest() != sha: return self.ack(id_, False, "sha256 mismatch, image discarded")
-        self.save(fw=ver); self.ack(id_, True, f"flashed v{ver}, rebooting"); time.sleep(.3); self.reboot("ota")
+        self.save(fw=ver); dt = time.monotonic() - t0; self.ack(id_, True, f"flashed v{ver} in {dt:.1f}s ({size/1024/dt:.1f} KB/s), rebooting"); time.sleep(.3); self.reboot("ota")
     def send_file(self, path):
         name = os.path.basename(path); data = open(path, "rb").read(); sha = hashlib.sha256(data).hexdigest()
         CH = 4096; chunks = (len(data) + CH - 1) // CH; xfer = random.randrange(1, 1 << 31)
