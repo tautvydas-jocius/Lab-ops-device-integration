@@ -4,16 +4,12 @@
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <mbedtls/md.h>
-#include <HTTPClient.h>
 #if __has_include(<esp_eap_client.h>)
 #include <esp_eap_client.h>  // Arduino-ESP32 3.x / IDF 5
 #define EAP_SET(id, user, pass) do { esp_eap_client_set_identity((const uint8_t *)id, strlen(id)); esp_eap_client_set_username((const uint8_t *)user, strlen(user)); esp_eap_client_set_password((const uint8_t *)pass, strlen(pass)); esp_wifi_sta_enterprise_enable(); } while (0)
 #else
 #include <esp_wpa2.h>  // Arduino-ESP32 2.x
 #define EAP_SET(id, user, pass) do { esp_wifi_sta_wpa2_ent_set_identity((uint8_t *)id, strlen(id)); esp_wifi_sta_wpa2_ent_set_username((uint8_t *)user, strlen(user)); esp_wifi_sta_wpa2_ent_set_password((uint8_t *)pass, strlen(pass)); esp_wifi_sta_wpa2_ent_enable(); } while (0)
-#endif
-#ifdef USB_MSC_UPLOAD
-#include "usb_drop.h"
 #endif
 #include "secrets.h"
 
@@ -26,6 +22,8 @@ PubSubClient mqtt(network);
 Preferences prefs;
 String rawTopic, configTopic, statusTopic, cmdTopic, ackTopic;
 uint32_t lastCmdId = 0;
+String fileBase, fileAckTopic;
+volatile uint32_t ackXfer = 0; volatile int ackState = 0;  // set by file_ack handler
 String wifiSsid = WIFI_SSID, wifiPass = WIFI_PASS, wifiUser, wifiIdent;  // user set => WPA2-Enterprise (PEAP/MSCHAPv2)  // NVS namespace "wifi" overrides secrets.h defaults
 bool wifiTrial = false;  // booted on pending creds; revert unless MQTT connects in time
 uint32_t bootMs = 0;
@@ -105,8 +103,13 @@ void onCommand(byte *payload, unsigned int length) {
   else if (action == "reboot") { ack(id, true, "rebooting"); mqtt.loop(); delay(200); ESP.restart(); }
   else ack(id, false, "unknown action");
 }
+#ifdef USB_MSC_UPLOAD
+#include "usb_drop.h"  // needs mqtt, hmacHex, fileBase, ackXfer defined above
+#endif
 void onMessage(char *topic, byte *payload, unsigned int length) {
-  String t(topic); if (t == cmdTopic) { onCommand(payload, length); return; } if (t != configTopic) return;
+  String t(topic);
+  if (t == fileAckTopic) { JsonDocument a; if (!deserializeJson(a, payload, length)) { ackState = (a["ok"] | false) ? 1 : 2; ackXfer = a["xfer"] | 0; } return; }
+  if (t == cmdTopic) { onCommand(payload, length); return; } if (t != configTopic) return;
   JsonDocument doc; if (deserializeJson(doc, payload, length)) return;
   configVersion = doc["config_version"] | configVersion; enabled = doc["enabled"] | enabled;
   baud = doc["baud"] | baud; dataBits = doc["data_bits"] | dataBits; stopBits = doc["stop_bits"] | stopBits;
@@ -145,20 +148,20 @@ void connectWifi() {
 void connectMqtt() {
   while (!mqtt.connected()) {
     String will = "{\"state\":\"offline\",\"config_version\":" + String(configVersion) + ",\"fw\":\"" FW_VERSION "\"}";
-    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); if (wifiTrial) commitWifi(); publishStatus("online"); }
+    if (mqtt.connect(DEVICE_ID, statusTopic.c_str(), 1, true, will.c_str())) { mqtt.subscribe(configTopic.c_str()); mqtt.subscribe(cmdTopic.c_str(), 1); mqtt.subscribe(fileAckTopic.c_str()); if (wifiTrial) commitWifi(); publishStatus("online"); }
     else if (wifiTrial && millis() - bootMs > TRIAL_MS) abandonTrial();
     else delay(2000);
   }
 }
 void setup() {
-  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack";
+  Serial.begin(115200); rawTopic = String(PREFIX) + "/" DEVICE_ID "/raw"; configTopic = String(PREFIX) + "/" DEVICE_ID "/config"; statusTopic = String(PREFIX) + "/" DEVICE_ID "/status"; cmdTopic = String(PREFIX) + "/" DEVICE_ID "/cmd"; ackTopic = String(PREFIX) + "/" DEVICE_ID "/ack"; fileBase = String(PREFIX) + "/" DEVICE_ID "/file"; fileAckTopic = String(PREFIX) + "/" DEVICE_ID "/file_ack";
   prefs.begin("scale", true); lastCmdId = prefs.getUInt("cmdid", 0); prefs.end();
   bootMs = millis(); loadWifi();
   loadConfig();
 #ifdef USB_MSC_UPLOAD
   usbDropBegin();
 #endif
-  beginWifi(); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(512);
+  beginWifi(); mqtt.setServer(MQTT_HOST, MQTT_PORT); mqtt.setCallback(onMessage); mqtt.setBufferSize(4096 + 160)  // 4 KB file chunks + topic/header;
 }
 void loop() {
   if (WiFi.status() != WL_CONNECTED) connectWifi();

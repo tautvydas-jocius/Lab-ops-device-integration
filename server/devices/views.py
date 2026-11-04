@@ -5,7 +5,6 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, Http404
 from django.shortcuts import render
-import hashlib, os
 from django.core.files.base import ContentFile
 from django.http import FileResponse
 from django.utils.text import get_valid_filename
@@ -197,26 +196,7 @@ def actions(request, device_id):
     if action not in dict(DeviceCommand.ACTIONS): return JsonResponse({"error": "unknown action", "allowed": [a for a, _ in DeviceCommand.ACTIONS]}, status=400)
     return JsonResponse(cmd_json(send_command(d, action, str(body.get("arg", ""))[:200], by="api")), status=202)
 
-MAX_UPLOAD = 8 * 1024 * 1024
-UPLOAD_TYPES = {".csv": None, ".txt": None, ".pdf": b"%PDF"}  # extension -> required magic prefix
-
 def bearer(request): return request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-
-@csrf_exempt
-def file_upload(request, device_id):
-    # Device-side upload from the MCU's USB drop drive; authenticated with that device's command token
-    try: d = Device.objects.get(device_id=device_id)
-    except Device.DoesNotExist: raise Http404
-    if not hmac.compare_digest(bearer(request), d.command_token): return JsonResponse({"error": "unauthorized"}, status=401)
-    if request.method != "POST": return JsonResponse({"error": "method not allowed"}, status=405)
-    name = get_valid_filename(os.path.basename(request.GET.get("name", ""))) or "upload"
-    ext = os.path.splitext(name)[1].lower(); body = request.body
-    if ext not in UPLOAD_TYPES: return JsonResponse({"error": "only .csv .txt .pdf accepted"}, status=415)
-    if not body or len(body) > MAX_UPLOAD: return JsonResponse({"error": "empty or too large"}, status=413)
-    if UPLOAD_TYPES[ext] and not body.startswith(UPLOAD_TYPES[ext]): return JsonResponse({"error": "content does not match extension"}, status=415)
-    if ext != ".pdf" and b"\x00" in body: return JsonResponse({"error": "binary content in text file"}, status=415)
-    f = UploadedFile(device=d, name=name, size=len(body), sha256=hashlib.sha256(body).hexdigest()); f.file.save(name, ContentFile(body), save=False); f.save()
-    return JsonResponse({"id": f.pk, "name": f.name, "size": f.size, "sha256": f.sha256}, status=201)
 
 def file_list(request, device_id):
     if not settings.CONTROL_API_TOKEN or not hmac.compare_digest(bearer(request), settings.CONTROL_API_TOKEN): return JsonResponse({"error": "unauthorized"}, status=401)

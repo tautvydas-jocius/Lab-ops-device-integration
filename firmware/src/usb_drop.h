@@ -1,13 +1,14 @@
 #pragma once
 // USB "drop drive": the ESP32-S3 enumerates as a small FAT12 flash drive backed by RAM. When the host has been
-// quiet for DROP_IDLE_MS, the root directory is scanned and every new/changed .csv/.pdf/.txt is POSTed to Django
-// (Bearer COMMAND_TOKEN). Nothing is persisted: the drive is empty after a reboot. The host is never modified.
+// quiet for DROP_IDLE_MS, the root directory is scanned and every new/changed .csv/.pdf/.txt is sent to Django as
+// binary MQTT chunks (signed with COMMAND_TOKEN). Nothing is persisted: the drive is empty after a reboot. The host is never modified.
 #include <Arduino.h>
-#include <HTTPClient.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <mbedtls/md.h>
 #include <WiFi.h>
 #include "USB.h"
 #include "USBMSC.h"
-#include "secrets.h"
 
 #define SECTOR 512
 #define DROP_IDLE_MS 2000
@@ -73,14 +74,25 @@ static void markSent(const String &n, uint32_t size, uint32_t crc) {
   if (i == nSent) { if (nSent == 24) i = --nSent; else nSent++; }  // full: overwrite last slot
   strlcpy(sent[i].name, n.c_str(), sizeof(sent[i].name)); sent[i].size = size; sent[i].crc = crc;
 }
-static String urlEncode(const String &s) {
-  String o; char h[4]; for (char c : s) { if (isalnum(c) || c == '.' || c == '-' || c == '_') o += c; else { snprintf(h, 4, "%%%02X", (uint8_t)c); o += h; } } return o;
-}
-static bool upload(const String &name, const uint8_t *data, uint32_t size) {
-  HTTPClient http; String url = String(UPLOAD_BASE_URL) + "/api/devices/" DEVICE_ID "/files/?name=" + urlEncode(name);
-  if (!http.begin(url)) return false;
-  http.addHeader("Authorization", String("Bearer ") + COMMAND_TOKEN); http.addHeader("Content-Type", "application/octet-stream"); http.setTimeout(20000);
-  int code = http.POST((uint8_t *)data, size); http.end(); return code == 201 || code == 200;
+// Sends the file as raw binary MQTT chunks (never text): <prefix>/<id>/file/<xfer>/meta (JSON, HMAC-signed) then
+// /<seq> (4 KB raw bytes). The server's mqtt_listener reassembles, checks size + SHA-256 + signature and answers
+// on <prefix>/<id>/file_ack. Returns 1 stored, 2 rejected by server (don't retry), 0 no ack / not sent (retry).
+static int upload(const String &name, const uint8_t *data, uint32_t size) {
+  if (!mqtt.connected()) return 0;
+  uint8_t h[32]; mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), data, size, h);
+  String sha; char b[3]; for (int i = 0; i < 32; i++) { snprintf(b, 3, "%02x", h[i]); sha += b; }
+  const uint32_t CH = 4096, chunks = (size + CH - 1) / CH; uint32_t xfer = esp_random() & 0x7FFFFFFF;
+  JsonDocument m; m["xfer"] = xfer; m["name"] = name; m["size"] = size; m["chunks"] = chunks; m["sha256"] = sha;
+  m["sig"] = hmacHex(String(xfer) + "|" + name + "|" + String(size) + "|" + sha);
+  String meta; serializeJson(m, meta); String base = fileBase + "/" + String(xfer);
+  ackXfer = 0; ackState = 0;
+  if (!mqtt.publish((base + "/meta").c_str(), meta.c_str())) return 0;
+  for (uint32_t c = 0; c < chunks; c++) {
+    if (!mqtt.publish((base + "/" + String(c)).c_str(), data + c * CH, min(CH, size - c * CH))) return 0;
+    mqtt.loop(); delay(3);  // pace so the broker/socket is not flooded
+  }
+  for (uint32_t t = millis(); millis() - t < 15000;) { mqtt.loop(); if (ackXfer == xfer) return ackState; delay(10); }
+  return 0;
 }
 static void scanRoot() {
   const uint8_t *root = disk + (1 + 2 * fatSectors) * SECTOR; char lfn[256]; bool haveLfn = false; memset(lfn, 0, sizeof(lfn));
@@ -103,7 +115,8 @@ static void scanRoot() {
     uint8_t *data = readChain(first, size); if (!data) continue;
     uint32_t crc = crc32(data, size);
     if (!alreadySent(name, size, crc) && WiFi.status() == WL_CONNECTED) {
-      if (upload(name, data, size)) markSent(name, size, crc);
+      int r = upload(name, data, size);
+      if (r) { markSent(name, size, crc); if (r == 2) Serial.printf("drop rejected by server: %s\n", name.c_str()); }
       else { Serial.printf("drop upload failed: %s\n", name.c_str()); dirty = true; lastWriteMs = millis(); }  // retry after another idle window
     }
     free(data);

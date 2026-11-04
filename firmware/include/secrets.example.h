@@ -8,5 +8,3 @@
 #define COMMAND_TOKEN "paste-token-from-admin"
 // Comment out to disable the USB flash-drive upload mode (needs PSRAM for the full 4 MB drive)
 #define USB_MSC_UPLOAD
-// Django base URL the dropped files are POSTed to (reachable from the MCU, not the loopback-only default)
-#define UPLOAD_BASE_URL "http://192.168.1.10:8011"

@@ -6,17 +6,33 @@ from django.utils import timezone
 from devices.models import Device, DeviceCommand, ParserSchema, Reading
 from devices.parsing import parse
 from devices.mqtt import publish_config
+from devices.files import store_upload
+from devices.transfer import Reassembler
 log = logging.getLogger(__name__)
 class Command(BaseCommand):
     help = "Consume device raw readings and status from MQTT"
     def handle(self, *args, **kwargs):
         client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         def on_connect(client, userdata, flags, reason_code, properties):
-            client.subscribe([(f"{settings.MQTT_PREFIX}/+/raw", 0), (f"{settings.MQTT_PREFIX}/+/status", 0), (f"{settings.MQTT_PREFIX}/+/ack", 1)])
+            client.subscribe([(f"{settings.MQTT_PREFIX}/+/raw", 0), (f"{settings.MQTT_PREFIX}/+/status", 0), (f"{settings.MQTT_PREFIX}/+/ack", 1), (f"{settings.MQTT_PREFIX}/+/file/#", 0)])
             for d in Device.objects.all():
                 try: publish_config(d)
                 except Exception as e: log.warning("republish failed %s: %s", d.device_id, e)
+        reasm = Reassembler(lambda ident: (Device.objects.filter(device_id=ident).values_list("command_token", flat=True).first()))
+        def on_file(client, ident, xfer, part, payload):
+            res = reasm.add(ident, xfer, part, payload)
+            if not res: return
+            status, xid, a, body = res
+            if status == "ok":
+                dev = Device.objects.filter(device_id=ident).first()
+                f, err = store_upload(dev, a, body)
+                ok, info = (True, f.name) if f else (False, err)
+            else: ok, info = False, a
+            log.info("file %s from %s: %s", "stored" if ok else "rejected", ident, info)
+            client.publish(f"{settings.MQTT_PREFIX}/{ident}/file_ack", json.dumps({"xfer": int(xid) if str(xid).isdigit() else xid, "ok": ok, "info": info}), qos=1)
         def on_message(client, userdata, msg):
+            fm = re.match(rf"^{re.escape(settings.MQTT_PREFIX)}/([^/]+)/file/(\d+)/(meta|\d+)$", msg.topic)
+            if fm: on_file(client, fm.group(1), fm.group(2), fm.group(3), msg.payload); return
             match = re.match(rf"^{re.escape(settings.MQTT_PREFIX)}/([^/]+)/(raw|status|ack)$", msg.topic)
             if not match: return
             ident, kind = match.groups()

@@ -95,15 +95,23 @@ class DeviceIntegrationTests(TestCase):
         self.assertEqual(cmd.arg, "ssid=lab")
         self.assertIn("hunter2", single.call_args.args[1])
 
-    def test_file_upload_token_and_validation(self):
-        import tempfile
+    def test_mqtt_file_transfer(self):
+        import hashlib, json, tempfile
+        from .files import store_upload
+        from .mqtt import sign_file
+        from .transfer import Reassembler
         d = Device.objects.create(device_id="f1", name="F", parser=self.mt)
-        url = "/api/devices/f1/files/"; ok = {"Authorization": f"Bearer {d.command_token}"}
+        body = b"a,b\n" + b"1,2\n" * 2000
+        sha = hashlib.sha256(body).hexdigest(); chunks = [body[i:i + 4096] for i in range(0, len(body), 4096)]
+        def meta(token):
+            return json.dumps({"xfer": 7, "name": "my data.csv", "size": len(body), "chunks": len(chunks), "sha256": sha, "sig": sign_file(token, 7, "my data.csv", len(body), sha)}).encode()
+        def run(token):
+            r = Reassembler(lambda ident: d.command_token); res = r.add("f1", "7", "meta", meta(token))
+            for i in reversed(range(len(chunks))): res = r.add("f1", "7", str(i), chunks[i]) or res  # out-of-order chunks
+            return res
+        self.assertEqual(run("wrong-token")[0], "error")
+        res = run(d.command_token); self.assertEqual(res[0], "ok")
         with tempfile.TemporaryDirectory() as tmp, override_settings(MEDIA_ROOT=tmp):
-            self.assertEqual(self.client.post(url + "?name=a.csv", b"a,b\n1,2\n", content_type="application/octet-stream").status_code, 401)
-            self.assertEqual(self.client.post(url + "?name=a.exe", b"x", content_type="application/octet-stream", headers=ok).status_code, 415)
-            self.assertEqual(self.client.post(url + "?name=a.pdf", b"not pdf", content_type="application/octet-stream", headers=ok).status_code, 415)
-            r = self.client.post(url + "?name=../a%20b.csv", b"a,b\n1,2\n", content_type="application/octet-stream", headers=ok)
-            self.assertEqual(r.status_code, 201); self.assertEqual(r.json()["name"], "a_b.csv")
-            self.assertEqual(self.client.post(url + "?name=r.pdf", b"%PDF-1.4 x", content_type="application/octet-stream", headers=ok).status_code, 201)
-        self.assertEqual(d.files.count(), 2)
+            f, err = store_upload(d, res[2], res[3]); self.assertIsNone(err); self.assertEqual(f.name, "my_data.csv")
+            self.assertIsNotNone(store_upload(d, "x.exe", b"x")[1]); self.assertIsNotNone(store_upload(d, "x.pdf", b"nope")[1])
+        self.assertEqual(d.files.count(), 1)

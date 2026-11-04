@@ -28,3 +28,6 @@ def send_command(device, action, arg="", by=""):
     except Exception as exc:
         cmd.status, cmd.result = "failed", f"publish failed: {exc}"; cmd.save(update_fields=["status", "result"])
     return cmd
+
+def sign_file(token, xfer, name, size, sha256):
+    return hmac.new(token.encode(), f"{xfer}|{name}|{size}|{sha256}".encode(), hashlib.sha256).hexdigest()
